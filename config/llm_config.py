@@ -5,7 +5,6 @@ from langchain_openai import ChatOpenAI
 
 env_path = Path(__file__).resolve().parent.parent / ".env"
 print(f"Loading env from: {env_path}")
-print("dotenv_values:", __import__("dotenv").dotenv_values(env_path))
 
 load_dotenv(dotenv_path=env_path, override=True)
 
