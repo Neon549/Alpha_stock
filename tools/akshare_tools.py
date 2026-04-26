@@ -1,6 +1,6 @@
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 
 import akshare as ak
@@ -56,6 +56,86 @@ def _validate_symbol(symbol: str) -> str | None:
 def _to_yf_symbol(symbol: str) -> str:
     return f"{symbol}.SS" if symbol.startswith("6") else f"{symbol}.SZ"
 
+def _normalize_symbol(symbol: str) -> str:
+    return (symbol or "").strip()
+
+
+def _get_spot_row_from_akshare(symbol: str) -> pd.Series | None:
+    """
+    用 AKShare 东财实时行情接口获取单只 A 股的行情行。
+    返回匹配到的单行 Series，失败返回 None。
+    """
+    try:
+        df = ak.stock_zh_a_spot_em()
+        if df is None or df.empty:
+            print(f"[AKSHARE_SPOT] empty result for symbol={symbol}")
+            return None
+
+        print(f"[AKSHARE_SPOT] columns={list(df.columns)}")
+        if "代码" not in df.columns:
+            print(f"[AKSHARE_SPOT] missing '代码' column for symbol={symbol}")
+            return None
+
+        matched = df[df["代码"].astype(str).str.zfill(6) == symbol]
+        if matched.empty:
+            print(f"[AKSHARE_SPOT] no matched row for symbol={symbol}")
+            return None
+
+        print(f"[AKSHARE_SPOT] matched symbol={symbol}")
+        return matched.iloc[0]
+
+    except Exception as e:
+        print(f"[AKSHARE_SPOT] exception for symbol={symbol}: {type(e).__name__}: {str(e)}")
+        return None
+
+
+def _get_hist_from_akshare(symbol: str, days: int) -> pd.DataFrame:
+    """
+    用 AKShare 历史行情接口获取最近 N 天日线。
+    返回统一列名的数据框；失败返回空 DataFrame。
+    """
+    try:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=max(days * 3, 90))
+
+        df = ak.stock_zh_a_hist(
+            symbol=symbol,
+            period="daily",
+            start_date=start_date.strftime("%Y%m%d"),
+            end_date=end_date.strftime("%Y%m%d"),
+            adjust="qfq",
+        )
+
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        rename_map = {
+            "日期": "日期",
+            "开盘": "开盘",
+            "收盘": "收盘",
+            "最高": "最高",
+            "最低": "最低",
+            "成交量": "成交量",
+            "涨跌幅": "涨跌幅",
+        }
+        available = [c for c in rename_map if c in df.columns]
+        if not available:
+            return pd.DataFrame()
+
+        df = df[available].copy()
+        df["日期"] = df["日期"].astype(str)
+
+        # 保证关键列是数值型
+        for col in ["开盘", "收盘", "最高", "最低", "成交量"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # 只保留最近 days 条
+        df = df.tail(days).reset_index(drop=True)
+        return df
+
+    except Exception:
+        return pd.DataFrame()
 
 def _safe_float(value):
     try:
@@ -107,21 +187,48 @@ def _get_stock_history_cached(symbol: str, days: int, date_key: str) -> pd.DataF
 def get_stock_price(symbol: str) -> str:
     """
     获取A股股票最近行情数据。
-    symbol: 股票代码，如 '002218'
+    优先 AKShare；失败再回退到 yfinance。
     """
-    symbol = (symbol or "").strip()
+    symbol = _normalize_symbol(symbol)
 
     err = _validate_symbol(symbol)
     if err:
         return _error("get_stock_price", symbol, err)
 
+    # ---------- 方案A：优先 AKShare ----------
+    try:
+        row = _get_spot_row_from_akshare(symbol)
+        if row is not None:
+            stock_name = str(row.get("名称", "名称未验证")).strip() or "名称未验证"
+
+            latest_price = _safe_float(row.get("最新价"))
+            change_pct = _safe_float(row.get("涨跌幅"))
+            volume = _safe_float(row.get("成交量"))
+            market_cap = row.get("总市值", "N/A")
+            turnover = row.get("换手率", "N/A")
+
+            if latest_price is not None:
+                body = (
+                    f"股票名称：{stock_name}\n"
+                    f"最新价：{latest_price:.2f}\n"
+                    f"涨跌幅：{change_pct if change_pct is not None else 'N/A'}\n"
+                    f"成交量：{volume if volume is not None else 'N/A'}\n"
+                    f"总市值：{market_cap}\n"
+                    f"换手率：{turnover}\n"
+                    f"数据来源：AKShare/东方财富实时行情"
+                )
+                return _ok("get_stock_price", symbol, body)
+    except Exception:
+        pass
+
+    # ---------- 方案B：回退 yfinance ----------
     try:
         yf_symbol = _to_yf_symbol(symbol)
         ticker = yf.Ticker(yf_symbol)
         df = ticker.history(period="5d")
 
         if df.empty:
-            return _error("get_stock_price", symbol, "行情数据为空，可能代码错误、停牌或数据源不可用")
+            return _error("get_stock_price", symbol, "AKShare 与 yfinance 均未获取到行情数据")
 
         if len(df) < 2:
             return _error("get_stock_price", symbol, "可用交易日不足2天，无法计算涨跌幅")
@@ -159,7 +266,7 @@ def get_stock_price(symbol: str) -> str:
             f"成交量：{latest_volume:,.0f}\n"
             f"总市值：{market_cap}\n"
             f"行业：{industry}\n"
-            f"数据日期：{df.index[-1] if hasattr(df.index[-1], 'strftime') else '最近交易日'}"
+            f"数据来源：yfinance 回退链路"
         )
         return _ok("get_stock_price", symbol, body)
 
@@ -171,6 +278,8 @@ def get_stock_price(symbol: str) -> str:
 def get_financial_indicator(symbol: str) -> str:
     """
     获取A股股票核心财务指标。
+    优先使用 AKShare/行情工具里的中文股票名称；
+    财务字段仍主要来自 yfinance.info。
     symbol: 股票代码，如 '002218'
     """
     symbol = (symbol or "").strip()
@@ -180,18 +289,52 @@ def get_financial_indicator(symbol: str) -> str:
         return _error("get_financial_indicator", symbol, err)
 
     try:
+        # 1) 先尝试从 AKShare 直接获取中文股票名称
+        ak_name = None
+        try:
+            row = _get_spot_row_from_akshare(symbol)
+            if row is not None:
+                ak_name = str(row.get("名称", "")).strip() or None
+        except Exception:
+            ak_name = None
+
+        # 2) 如果 AKShare 直接名称没拿到，再从 get_stock_price 的结果里解析中文名
+        if not ak_name:
+            try:
+                price_result = get_stock_price.invoke({"symbol": symbol})
+                if "[TOOL_OK]" in price_result:
+                    for line in price_result.splitlines():
+                        if line.startswith("股票名称："):
+                            parsed_name = line.replace("股票名称：", "").strip()
+                            if parsed_name and parsed_name != "名称未验证":
+                                ak_name = parsed_name
+                                break
+            except Exception:
+                pass
+
+        # 3) 再从 yfinance 获取财务字段
         yf_symbol = _to_yf_symbol(symbol)
         ticker = yf.Ticker(yf_symbol)
 
         try:
             info = ticker.info or {}
         except Exception as e:
-            return _error("get_financial_indicator", symbol, f"财务信息拉取失败：{type(e).__name__}: {str(e)}")
+            return _error(
+                "get_financial_indicator",
+                symbol,
+                f"财务信息拉取失败：{type(e).__name__}: {str(e)}"
+            )
 
         if not info:
             return _error("get_financial_indicator", symbol, "财务信息为空")
 
-        stock_name = info.get("longName") or info.get("shortName") or "名称未验证"
+        # 4) 名称优先使用中文名，英文名仅作最后回退
+        stock_name = (
+            ak_name
+            or info.get("longName")
+            or info.get("shortName")
+            or "名称未验证"
+        )
 
         current_price = info.get("currentPrice", "N/A")
         trailing_pe = info.get("trailingPE", "N/A")
@@ -203,7 +346,6 @@ def get_financial_indicator(symbol: str) -> str:
         debt_to_equity = info.get("debtToEquity", "N/A")
         industry = info.get("industry", "N/A")
 
-        # 至少保证不是全空
         core_values = [
             current_price,
             trailing_pe,
@@ -230,7 +372,7 @@ def get_financial_indicator(symbol: str) -> str:
             f"毛利率：{gross_margins}\n"
             f"负债率：{debt_to_equity}\n"
             f"行业：{industry}\n"
-            f"说明：若部分字段为 N/A，表示数据源未提供，不得自行补全。"
+            f"说明：股票名称优先采用 AKShare 中文简称；若部分字段为 N/A，表示数据源未提供，不得自行补全。"
         )
         return _ok("get_financial_indicator", symbol, body)
 
@@ -242,10 +384,9 @@ def get_financial_indicator(symbol: str) -> str:
 def get_stock_history(symbol: str, days: int = 30) -> str:
     """
     获取A股股票最近N天历史K线数据。
-    symbol: 股票代码，如 '002218'
-    days: 天数，默认30
+    优先 AKShare；失败再回退到 yfinance。
     """
-    symbol = (symbol or "").strip()
+    symbol = _normalize_symbol(symbol)
 
     err = _validate_symbol(symbol)
     if err:
@@ -254,12 +395,44 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
     if days <= 1 or days > 365:
         return _error("get_stock_history", symbol, "days 参数不合理，应在 2 到 365 之间")
 
+    # ---------- 方案A：优先 AKShare ----------
+    try:
+        df = _get_hist_from_akshare(symbol, days)
+
+        if not df.empty:
+            required_cols = {"日期", "开盘", "收盘", "最高", "最低", "成交量"}
+            if required_cols.issubset(set(df.columns)):
+                if df["收盘"].isna().all():
+                    return _error("get_stock_history", symbol, "AKShare 历史收盘价全部为空或NaN")
+
+                if "涨跌幅" not in df.columns:
+                    df["涨跌幅"] = df["收盘"].pct_change(fill_method=None) * 100
+
+                latest_close = _safe_float(df["收盘"].iloc[-1])
+                highest = _safe_float(df["最高"].max())
+                lowest = _safe_float(df["最低"].min())
+
+                if latest_close is not None and highest is not None and lowest is not None:
+                    df_view = df[["日期", "开盘", "收盘", "最高", "最低", "成交量", "涨跌幅"]].tail(10)
+                    body = (
+                        f"最近{len(df)}天K线数据\n"
+                        f"期间最高价：{highest:.2f}\n"
+                        f"期间最低价：{lowest:.2f}\n"
+                        f"最新收盘价：{latest_close:.2f}\n"
+                        f"数据来源：AKShare/东方财富历史行情\n\n"
+                        f"最近10日明细：\n{df_view.to_string(index=False)}"
+                    )
+                    return _ok("get_stock_history", symbol, body)
+    except Exception:
+        pass
+
+    # ---------- 方案B：回退 yfinance ----------
     try:
         date_key = datetime.now().strftime("%Y%m%d%H")
         df = _get_stock_history_cached(symbol, days, date_key)
 
         if df.empty:
-            return _error("get_stock_history", symbol, "历史K线数据为空")
+            return _error("get_stock_history", symbol, "AKShare 与 yfinance 均未获取到历史K线数据")
 
         required_cols = {"日期", "开盘", "收盘", "最高", "最低", "成交量"}
         if not required_cols.issubset(set(df.columns)):
@@ -268,7 +441,10 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
         if df["收盘"].isna().all():
             return _error("get_stock_history", symbol, "历史收盘价全部为空或NaN")
 
-        df["涨跌幅"] = df["收盘"].pct_change() * 100
+        if df[["开盘", "收盘", "最高", "最低"]].isna().any().any():
+            return _error("get_stock_history", symbol, "关键价格字段存在空值，无法生成技术摘要")
+
+        df["涨跌幅"] = df["收盘"].pct_change(fill_method=None) * 100
 
         latest_close = _safe_float(df["收盘"].iloc[-1])
         highest = _safe_float(df["最高"].max())
@@ -284,7 +460,8 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
             f"最近{len(df)}天K线数据\n"
             f"期间最高价：{highest:.2f}\n"
             f"期间最低价：{lowest:.2f}\n"
-            f"最新收盘价：{latest_close:.2f}\n\n"
+            f"最新收盘价：{latest_close:.2f}\n"
+            f"数据来源：yfinance 回退链路\n\n"
             f"最近10日明细：\n{df_view.to_string(index=False)}"
         )
         return _ok("get_stock_history", symbol, body)

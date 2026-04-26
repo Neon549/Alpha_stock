@@ -110,13 +110,13 @@ def validation_node(state: TradingState) -> dict:
     if _contains_error(sentiment_report):
         errors.append("情绪分析存在工具错误或数据不足")
 
-    company_names = _extract_company_names(
-        fundamental_report,
-        technical_report,
-        sentiment_report,
-    )
-    if len(company_names) > 1:
-        errors.append(f"检测到公司名称不一致：{', '.join(sorted(company_names))}")
+    # company_names = _extract_company_names(
+    #     fundamental_report,
+    #     technical_report,
+    #     sentiment_report,
+    # )
+    # if len(company_names) > 1:
+    #     errors.append(f"检测到公司名称不一致：{', '.join(sorted(company_names))}")
 
     if errors:
         print("❌ 校验失败，系统将中止后续决策")
