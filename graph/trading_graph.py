@@ -32,7 +32,17 @@ COMPANY_NAME_PATTERN = re.compile(r"股票名称[:：]\s*([^\n]+)")
 def _contains_error(text: str | None) -> bool:
     if not text:
         return True
-    return any(marker in text for marker in ERROR_MARKERS)
+
+    text = text.strip()
+
+    # 只有真正以失败结果开头，才算错误
+    if text.startswith("[ANALYSIS_ABORT]"):
+        return True
+
+    if text.startswith("[TOOL_ERROR]"):
+        return True
+
+    return False
 
 
 def _extract_company_names(*texts: str) -> set[str]:
