@@ -1,15 +1,18 @@
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage
 
+from tools.backtest_tools import run_strategy_backtest, list_available_strategies
+from langchain_core.messages import HumanMessage
 from graph.state import TradingState
 from agents.fundamental_analyst import run_fundamental_analysis
 from agents.technical_analyst import run_technical_analysis
 from agents.sentiment_analyst import run_sentiment_analysis
 from config.llm_config import deep_llm
 from memory.long_term import LongTermMemory
-
+import time
 import concurrent.futures
 import re
+from rag.strategy_indexer import retrieve_strategy_knowledge
 
 memory = LongTermMemory()
 
@@ -59,28 +62,29 @@ def _extract_company_names(*texts: str) -> set[str]:
 
 
 def analysts_node(state: TradingState) -> dict:
-    """
-    并行执行三个分析师
-    """
     stock_code = state["stock_code"]
+    total_start = time.time()
     print(f"\n🚀 三个分析师并行启动：{stock_code}")
 
     def run_fundamental():
+        start = time.time()
         print("📊 [基本面分析师] 开始...")
         result = run_fundamental_analysis(stock_code)
-        print("✅ 基本面分析完成")
+        print(f"✅ 基本面分析完成，用时 {time.time() - start:.2f}s")
         return result
 
     def run_technical():
+        start = time.time()
         print("📈 [技术面分析师] 开始...")
         result = run_technical_analysis(stock_code)
-        print("✅ 技术面分析完成")
+        print(f"✅ 技术面分析完成，用时 {time.time() - start:.2f}s")
         return result
 
     def run_sentiment():
+        start = time.time()
         print("📰 [情绪分析师] 开始...")
         result = run_sentiment_analysis(stock_code)
-        print("✅ 情绪分析完成")
+        print(f"✅ 情绪分析完成，用时 {time.time() - start:.2f}s")
         return result
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -92,7 +96,7 @@ def analysts_node(state: TradingState) -> dict:
         technical_report = future_technical.result()
         sentiment_report = future_sentiment.result()
 
-    print("\n✅ 三个分析师全部完成，进入校验节点")
+    print(f"✅ 三个分析师全部完成，总用时 {time.time() - total_start:.2f}s")
 
     return {
         "fundamental_report": fundamental_report,
@@ -266,6 +270,134 @@ def trader_node(state: TradingState) -> dict:
     print("✅ 交易决策完成并已存入记忆")
     return {"final_decision": decision}
 
+def backtest_node(state: TradingState) -> dict:
+    """
+    回测节点：解析用户的回测请求，调用回测引擎
+    触发条件：state中有 backtest_request 字段
+    """
+    print("\n📊 [回测节点] 开始执行量化回测...")
+
+    req = state.get("backtest_request") or {}
+    stock_code  = req.get("stock_code",  state.get("stock_code", ""))
+    strategy    = req.get("strategy",    "kdj_macd")
+    start_date  = req.get("start_date",  "20220101")
+    end_date    = req.get("end_date",    "20261231")
+    initial_cash = req.get("initial_cash", 100000.0)
+
+    if not stock_code:
+        return {
+            "backtest_report": "[TOOL_ERROR]\nreason=股票代码为空",
+            "backtest_summary": "回测失败：未提供股票代码。",
+        }
+
+    result = run_strategy_backtest.invoke({
+        "stock_code":   stock_code,
+        "strategy":     strategy,
+        "start_date":   start_date,
+        "end_date":     end_date,
+        "initial_cash": initial_cash,
+    })
+
+    print(f"✅ 回测完成")
+    return {"backtest_report": result}
+
+
+def backtest_interpreter_node(state: TradingState) -> dict:
+    print("\n🧠 [解读节点] LLM解读回测结果...")
+
+    report = state.get("backtest_report", "")
+    req = state.get("backtest_request") or {}
+
+    if "[TOOL_ERROR]" in report:
+        return {"backtest_summary": "回测数据异常，无法生成解读报告。"}
+
+    # RAG检索相关策略知识
+    rag_knowledge = retrieve_strategy_knowledge(
+        f"{req.get('strategy', '')} 策略 夏普比率 回撤 胜率"
+    )
+
+    prompt = f"""你是一位专业的A股量化分析师，请基于以下回测结果和策略知识给出专业评价。
+
+## 回测数据
+{report}
+
+## 相关策略知识库（请结合这些理论依据分析）
+{rag_knowledge}
+
+请从以下几个角度给出中文分析（每点2-3句话）：
+
+### 1. 收益评价
+[评价总收益率和夏普比率，与沪深300年化收益对比]
+
+### 2. 风险评价  
+[评价最大回撤，结合知识库中的可接受回撤标准判断]
+
+### 3. 策略有效性
+[根据交易次数和胜率判断，结合知识库中的统计显著性要求]
+
+### 4. 优化建议
+[结合知识库中的参数调整建议，给出1-2条具体优化方向]
+
+### 5. 综合结论
+[一句话总结：该策略是否值得进一步验证]
+
+注意：回测结果基于历史数据，不构成投资建议。
+"""
+
+    response = deep_llm.invoke([HumanMessage(content=prompt)])
+    summary = response.content
+    print("✅ 回测解读完成")
+
+    # 存入长期记忆
+    memory.save_backtest_result(
+        stock_code=req.get("stock_code", state.get("stock_code", "")),
+        strategy=req.get("strategy", "unknown"),
+        result_summary=report[:500],
+    )
+    print("💾 回测结果已存入长期记忆")
+
+    return {"backtest_summary": summary}
+
+def backtest_optimizer_node(state: TradingState) -> dict:
+    """
+    参数优化节点：对当前策略执行网格搜索，找到最优参数组合
+    触发条件：回测完成后自动执行
+    """
+    print("\n⚙️ [优化节点] 开始参数网格搜索...")
+
+    req = state.get("backtest_request") or {}
+    stock_code  = req.get("stock_code", state.get("stock_code", ""))
+    strategy    = req.get("strategy", "kdj_macd")
+    start_date  = req.get("start_date", "20220101")
+    end_date    = req.get("end_date", "20261231")
+
+    try:
+        import os
+        from backtest.data_loader import get_stock_data_tushare, get_mock_data
+        from backtest.optimizer import grid_search, format_optimization_result
+
+        token = os.getenv("TUSHARE_TOKEN", "")
+        if token:
+            df = get_stock_data_tushare(stock_code, start_date, end_date, token)
+        else:
+            df = get_mock_data(stock_code, days=500)
+
+        results = grid_search(df, strategy, top_n=3)
+        opt_report = format_optimization_result(results, strategy)
+        print("✅ 参数优化完成")
+
+        # 存入记忆
+        memory.save_backtest_result(
+            stock_code=stock_code,
+            strategy=f"{strategy}_optimized",
+            result_summary=opt_report[:500],
+        )
+
+        return {"backtest_summary": state.get("backtest_summary", "") + "\n\n---\n" + opt_report}
+
+    except Exception as e:
+        print(f"[Optimizer] 优化失败: {e}")
+        return {}
 
 def build_trading_graph():
     """
@@ -298,12 +430,28 @@ def build_trading_graph():
     graph.add_edge("researcher", "trader")
     graph.add_edge("trader", END)
     graph.add_edge("abort", END)
+    # ── 回测子图（独立于主分析流程）──────────────
+    graph.add_node("backtest", backtest_node)
+    graph.add_node("backtest_interpreter", backtest_interpreter_node)
+    graph.add_edge("backtest", "backtest_interpreter")
+    graph.add_edge("backtest_interpreter", END)
 
     return graph.compile()
 
+def build_backtest_graph():
+    graph = StateGraph(TradingState)
+    graph.add_node("backtest", backtest_node)
+    graph.add_node("backtest_interpreter", backtest_interpreter_node)
+    graph.add_node("backtest_optimizer", backtest_optimizer_node)
 
+    graph.set_entry_point("backtest")
+    graph.add_edge("backtest", "backtest_interpreter")
+    graph.add_edge("backtest_interpreter", "backtest_optimizer")
+    graph.add_edge("backtest_optimizer", END)
+    return graph.compile()
+
+backtest_graph = build_backtest_graph()
 trading_graph = build_trading_graph()
-
 
 def run_trading_analysis(stock_code: str) -> dict:
     initial_state = {
@@ -319,3 +467,37 @@ def run_trading_analysis(stock_code: str) -> dict:
         "messages": [],
     }
     return trading_graph.invoke(initial_state)
+
+def run_backtest_analysis(
+    stock_code: str,
+    strategy: str = "kdj_macd",
+    start_date: str = "20220101",
+    end_date: str = "20261231",
+    initial_cash: float = 100000.0,
+) -> dict:
+    """
+    回测分析入口 —— 直接进入回测节点，不走完整分析流程
+    供 api/routes.py 的 /backtest 接口调用
+    """
+    initial_state = {
+        "stock_code":  stock_code,
+        "fundamental_report": None,
+        "technical_report":   None,
+        "sentiment_report":   None,
+        "bull_argument":      None,
+        "bear_argument":      None,
+        "debate_rounds":      0,
+        "final_decision":     None,
+        "risk_assessment":    None,
+        "backtest_request": {
+            "stock_code":   stock_code,
+            "strategy":     strategy,
+            "start_date":   start_date,
+            "end_date":     end_date,
+            "initial_cash": initial_cash,
+        },
+        "backtest_report":  None,
+        "backtest_summary": None,
+        "messages": [],
+    }
+    return backtest_graph.invoke(initial_state)

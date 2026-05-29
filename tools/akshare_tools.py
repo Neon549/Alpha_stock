@@ -2,12 +2,24 @@ import re
 import time
 from datetime import datetime, timedelta
 from functools import lru_cache
-
 import akshare as ak
 import pandas as pd
 import requests
 import yfinance as yf
 from langchain_core.tools import tool
+import os
+import tushare as ts
+from dotenv import load_dotenv
+from pathlib import Path
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
+from tools.stock_name_dict import get_stock_name
+
+# def _get_ts_pro():
+#     token = os.getenv("TUSHARE_TOKEN", "")
+#     if not token:
+#         return None
+#     ts.set_token(token)
+#     return ts.pro_api()
 
 # ============================================================
 # 统一说明
@@ -60,33 +72,66 @@ def _normalize_symbol(symbol: str) -> str:
     return (symbol or "").strip()
 
 
-def _get_spot_row_from_akshare(symbol: str) -> pd.Series | None:
-    """
-    用 AKShare 东财实时行情接口获取单只 A 股的行情行。
-    返回匹配到的单行 Series，失败返回 None。
-    """
-    try:
-        df = ak.stock_zh_a_spot_em()
-        if df is None or df.empty:
-            print(f"[AKSHARE_SPOT] empty result for symbol={symbol}")
-            return None
 
-        print(f"[AKSHARE_SPOT] columns={list(df.columns)}")
-        if "代码" not in df.columns:
-            print(f"[AKSHARE_SPOT] missing '代码' column for symbol={symbol}")
-            return None
+# 常用股票名称本地缓存，避免频繁调用Tushare stock_basic接口
+_STOCK_NAME_CACHE: dict[str, str] = {}
 
-        matched = df[df["代码"].astype(str).str.zfill(6) == symbol]
-        if matched.empty:
-            print(f"[AKSHARE_SPOT] no matched row for symbol={symbol}")
-            return None
+# @lru_cache(maxsize=256)
+# def _get_stock_name_from_tushare(symbol: str) -> str | None:
+#     """通过Tushare namechange接口获取股票中文名称，无频率限制"""
+#     try:
+#         import tushare as ts
+#         token = os.getenv("TUSHARE_TOKEN", "")
+#         if not token:
+#             return None
+#         ts.set_token(token)
+#         pro = ts.pro_api()
+#         ts_code = f"{symbol}.SH" if symbol.startswith("6") else f"{symbol}.SZ"
+#         df = pro.namechange(ts_code=ts_code, fields="ts_code,name")
+#         if df is not None and not df.empty:
+#             return str(df.iloc[0]["name"])
+#         return None
+#     except Exception as e:
+#         print(f"[TushareNameError] {symbol}: {e}")
+#         return None
 
-        print(f"[AKSHARE_SPOT] matched symbol={symbol}")
-        return matched.iloc[0]
 
-    except Exception as e:
-        print(f"[AKSHARE_SPOT] exception for symbol={symbol}: {type(e).__name__}: {str(e)}")
-        return None
+# def get_stock_name(symbol: str) -> str:
+#     """
+#     获取股票中文名称，优先本地缓存，其次Tushare。
+#     这是对外的统一入口，其他函数都调这个。
+#     """
+#     if symbol in _STOCK_NAME_CACHE:
+#         return _STOCK_NAME_CACHE[symbol]
+#     name = _get_stock_name_from_tushare(symbol)
+#     return name or "名称未验证"
+
+# def _get_realtime_price_from_tushare(symbol: str) -> dict | None:
+#     """
+#     通过Tushare获取实时/最新行情，120积分可用
+#     返回dict: {name, price, change_pct, volume}
+#     """
+#     try:
+#         pro = _get_ts_pro()
+#         if pro is None:
+#             return None
+#         ts_code = f"{symbol}.SH" if symbol.startswith("6") else f"{symbol}.SZ"
+#         # 拉最近1天日线作为"最新行情"
+#         from datetime import datetime
+#         today = datetime.now().strftime("%Y%m%d")
+#         df = pro.daily(ts_code=ts_code, start_date="20250101", end_date=today)
+#         if df is None or df.empty:
+#             return None
+#         latest = df.iloc[0]  # 最新一行
+#         name = _get_stock_name_from_tushare(symbol)
+#         return {
+#             "name":       name or "名称未验证",
+#             "price":      float(latest["close"]),
+#             "change_pct": float(latest["pct_chg"]),
+#             "volume":     float(latest["vol"]),
+#         }
+#     except Exception:
+#         return None
 
 
 def _get_hist_from_akshare(symbol: str, days: int) -> pd.DataFrame:
@@ -195,31 +240,20 @@ def get_stock_price(symbol: str) -> str:
     if err:
         return _error("get_stock_price", symbol, err)
 
-    # ---------- 方案A：优先 AKShare ----------
-    try:
-        row = _get_spot_row_from_akshare(symbol)
-        if row is not None:
-            stock_name = str(row.get("名称", "名称未验证")).strip() or "名称未验证"
-
-            latest_price = _safe_float(row.get("最新价"))
-            change_pct = _safe_float(row.get("涨跌幅"))
-            volume = _safe_float(row.get("成交量"))
-            market_cap = row.get("总市值", "N/A")
-            turnover = row.get("换手率", "N/A")
-
-            if latest_price is not None:
-                body = (
-                    f"股票名称：{stock_name}\n"
-                    f"最新价：{latest_price:.2f}\n"
-                    f"涨跌幅：{change_pct if change_pct is not None else 'N/A'}\n"
-                    f"成交量：{volume if volume is not None else 'N/A'}\n"
-                    f"总市值：{market_cap}\n"
-                    f"换手率：{turnover}\n"
-                    f"数据来源：AKShare/东方财富实时行情"
-                )
-                return _ok("get_stock_price", symbol, body)
-    except Exception:
-        pass
+    # # ---------- 方案A：优先 Tushare ----------
+    # try:
+    #     data = _get_realtime_price_from_tushare(symbol)
+    #     if data is not None:
+    #         body = (
+    #             f"股票名称：{data['name']}\n"
+    #             f"最新价：{data['price']:.2f}\n"
+    #             f"涨跌幅：{data['change_pct']:.2f}%\n"
+    #             f"成交量：{data['volume']}\n"
+    #             f"数据来源：Tushare日线行情\n"
+    #         )
+    #         return _ok("get_stock_price", symbol, body)
+    # except Exception:
+    #     pass
 
     # ---------- 方案B：回退 yfinance ----------
     try:
@@ -255,7 +289,7 @@ def get_stock_price(symbol: str) -> str:
         except Exception:
             info = {}
 
-        stock_name = info.get("longName") or info.get("shortName") or "名称未验证"
+        stock_name = get_stock_name(symbol)
         industry = info.get("industry", "N/A")
         market_cap = info.get("marketCap", "N/A")
 
@@ -290,29 +324,10 @@ def get_financial_indicator(symbol: str) -> str:
 
     try:
         # 1) 先尝试从 AKShare 直接获取中文股票名称
-        ak_name = None
-        try:
-            row = _get_spot_row_from_akshare(symbol)
-            if row is not None:
-                ak_name = str(row.get("名称", "")).strip() or None
-        except Exception:
-            ak_name = None
+        # 优先从Tushare获取中文股票名称，稳定不被403
+        ak_name = get_stock_name(symbol)
 
-        # 2) 如果 AKShare 直接名称没拿到，再从 get_stock_price 的结果里解析中文名
-        if not ak_name:
-            try:
-                price_result = get_stock_price.invoke({"symbol": symbol})
-                if "[TOOL_OK]" in price_result:
-                    for line in price_result.splitlines():
-                        if line.startswith("股票名称："):
-                            parsed_name = line.replace("股票名称：", "").strip()
-                            if parsed_name and parsed_name != "名称未验证":
-                                ak_name = parsed_name
-                                break
-            except Exception:
-                pass
-
-        # 3) 再从 yfinance 获取财务字段
+        # 2) 再从 yfinance 获取财务字段
         yf_symbol = _to_yf_symbol(symbol)
         ticker = yf.Ticker(yf_symbol)
 
@@ -328,7 +343,7 @@ def get_financial_indicator(symbol: str) -> str:
         if not info:
             return _error("get_financial_indicator", symbol, "财务信息为空")
 
-        # 4) 名称优先使用中文名，英文名仅作最后回退
+        # 3) 名称优先使用中文名，英文名仅作最后回退
         stock_name = (
             ak_name
             or info.get("longName")

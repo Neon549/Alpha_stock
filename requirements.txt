@@ -1,3 +1,4 @@
+# ── 原有依赖 ──
 fastapi
 uvicorn[standard]
 langchain
@@ -16,3 +17,8 @@ plotly
 requests
 sentence-transformers
 faiss-cpu
+
+# ── 新增：量化回测 ──
+tushare
+backtrader
+quantstats
