@@ -12,7 +12,7 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env", override=True)
 
-API_BASE = "http://localhost:8000/api/v1"
+API_BASE = "https://neonzz-neon-stock-trading-agent.hf.space/api/v1"
 
 st.set_page_config(
     page_title="A股量化分析系统",
