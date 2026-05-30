@@ -6,8 +6,9 @@
 @created: 2026/5/29 21:11
 @updated: 2026/5/29 21:11
 @version: 1.0
-@description: 
+@description:
 """
+
 import os
 import pandas as pd
 import numpy as np
@@ -46,6 +47,7 @@ def get_stock_data_tushare(
 
     print(f"[DataLoader] 从Tushare拉取: {ts_code} {start_date}~{end_date}")
     import tushare as ts
+
     ts.set_token(token)
     pro = ts.pro_api()
 
@@ -53,7 +55,7 @@ def get_stock_data_tushare(
         ts_code=ts_code,
         start_date=start_date,
         end_date=end_date,
-        fields="trade_date,open,high,low,close,vol"
+        fields="trade_date,open,high,low,close,vol",
     )
 
     if raw is None or raw.empty:
@@ -71,7 +73,6 @@ def get_stock_data_tushare(
 
 def get_mock_data(stock_code: str = "000001", days: int = 500) -> pd.DataFrame:
     np.random.seed(hash(stock_code) % 2**32)
-
     dates = pd.date_range(end=pd.Timestamp.today(), periods=days, freq="B")
     price = 15.0
     prices = []
@@ -80,18 +81,20 @@ def get_mock_data(stock_code: str = "000001", days: int = 500) -> pd.DataFrame:
     for i in range(days):
         if i % 50 == 0:
             trend = np.random.choice([-0.001, 0.0, 0.001])
-        price *= (1 + trend + np.random.normal(0, 0.018))
+        price *= 1 + trend + np.random.normal(0, 0.018)
         price = max(price, 2.0)
         prices.append(price)
 
     close = pd.Series(prices, index=dates)
-    df = pd.DataFrame({
-        "open":   close * (1 + np.random.uniform(-0.008, 0.008, days)),
-        "high":   close * (1 + np.random.uniform(0.001, 0.025, days)),
-        "low":    close * (1 - np.random.uniform(0.001, 0.025, days)),
-        "close":  close,
-        "volume": np.random.randint(5_000_000, 80_000_000, days).astype(float),
-    })
+    df = pd.DataFrame(
+        {
+            "open": close * (1 + np.random.uniform(-0.008, 0.008, days)),
+            "high": close * (1 + np.random.uniform(0.001, 0.025, days)),
+            "low": close * (1 - np.random.uniform(0.001, 0.025, days)),
+            "close": close,
+            "volume": np.random.randint(5_000_000, 80_000_000, days).astype(float),
+        }
+    )
     df.index.name = "datetime"
     print(f"[DataLoader] 模拟数据: {stock_code}, {days}根K线")
     return df

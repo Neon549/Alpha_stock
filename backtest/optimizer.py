@@ -6,8 +6,9 @@
 @created: 2026/5/29 23:02
 @updated: 2026/5/29 23:02
 @version: 1.0
-@description: 
+@description:
 """
+
 # backtest/optimizer.py
 # 参数优化器 —— ReAct循环自动搜索最优参数
 #
@@ -22,22 +23,26 @@ import backtrader as bt
 import backtrader.indicators as btind
 import pandas as pd
 
-
 # ── 可调参数空间定义 ─────────────────────────────
 PARAM_SPACE = {
     "rsi": {
         "rsi_period": [6, 9, 14, 21],
-        "rsi_low":    [20, 25, 30],
-        "rsi_high":   [70, 75, 80],
+        "rsi_low": [20, 25, 30],
+        "rsi_high": [70, 75, 80],
     },
     "kdj_macd": {
         "kdj_period": [5, 7, 9],
-        "macd_fast":  [10, 12],
-        "macd_slow":  [24, 26],
+        "macd_fast": [10, 12],
+        "macd_slow": [24, 26],
     },
     "boll": {
         "boll_period": [15, 20, 25],
-        "boll_dev":    [1.5, 2.0, 2.5],
+        "boll_dev": [1.5, 2.0, 2.5],
+    },
+    "kdj_oversold": {
+        "k_threshold": [15, 20, 25, 30],
+        "d_threshold": [15, 20, 25, 30],
+        "j_threshold": [0, 5, 10, 15],
     },
 }
 
@@ -60,6 +65,7 @@ def grid_search(
 
     # 生成所有参数组合
     import itertools
+
     keys = list(space.keys())
     values = list(space.values())
     combinations = list(itertools.product(*values))
@@ -78,16 +84,23 @@ def grid_search(
             data_feed = bt.feeds.PandasData(
                 dataname=df,
                 datetime=None,
-                open="open", high="high", low="low",
-                close="close", volume="volume",
+                open="open",
+                high="high",
+                low="low",
+                close="close",
+                volume="volume",
                 openinterest=-1,
             )
             cerebro.adddata(data_feed)
             cerebro.addsizer(bt.sizers.PercentSizer, percents=95)
             cerebro.addstrategy(strategy_cls, **params, printlog=False)
 
-            cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe",
-                                riskfreerate=0.03, annualize=True)
+            cerebro.addanalyzer(
+                bt.analyzers.SharpeRatio,
+                _name="sharpe",
+                riskfreerate=0.03,
+                annualize=True,
+            )
             cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
             cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
 
@@ -97,19 +110,29 @@ def grid_search(
             strat = res[0]
 
             sharpe = strat.analyzers.sharpe.get_analysis().get("sharperatio")
-            max_dd = strat.analyzers.drawdown.get_analysis().get("max", {}).get("drawdown", 0)
-            total_trades = strat.analyzers.trades.get_analysis().get("total", {}).get("total", 0)
+            max_dd = (
+                strat.analyzers.drawdown.get_analysis()
+                .get("max", {})
+                .get("drawdown", 0)
+            )
+            total_trades = (
+                strat.analyzers.trades.get_analysis().get("total", {}).get("total", 0)
+            )
             won = strat.analyzers.trades.get_analysis().get("won", {}).get("total", 0)
             total_return = (end_val - start_val) / start_val * 100
 
-            results.append({
-                "params":        params,
-                "total_return":  round(total_return, 2),
-                "sharpe":        round(sharpe, 3) if sharpe else None,
-                "max_drawdown":  round(max_dd, 2),
-                "trade_count":   total_trades,
-                "win_rate":      round(won / total_trades * 100, 1) if total_trades > 0 else 0,
-            })
+            results.append(
+                {
+                    "params": params,
+                    "total_return": round(total_return, 2),
+                    "sharpe": round(sharpe, 3) if sharpe else None,
+                    "max_drawdown": round(max_dd, 2),
+                    "trade_count": total_trades,
+                    "win_rate": (
+                        round(won / total_trades * 100, 1) if total_trades > 0 else 0
+                    ),
+                }
+            )
         except Exception as e:
             continue
 
