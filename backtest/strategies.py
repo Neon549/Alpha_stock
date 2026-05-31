@@ -45,7 +45,9 @@ class KDJOversoldStrategy(bt.Strategy):
         self.kdj_cross = btind.CrossOver(self.k_line, self.d_line)
 
         # 新增MA60
-        self.ma60 = btind.SMA(self.data.close, period=60)
+        self.ma20 = btind.SMA(self.data.close, period=20)
+        self.consecutive_losses = 0
+        self.cooldown = 0
 
         self.order = None
         self.buy_price = None
@@ -169,6 +171,10 @@ class JExtremeStrategy(bt.Strategy):
             else:
                 gain = (order.executed.price - self.buy_price) / self.buy_price * 100
                 self.log(f"卖出成交 | ¥{order.executed.price:.2f} | 盈亏:{gain:+.1f}%")
+                if gain < 0:
+                    self.consecutive_losses += 1
+                else:
+                    self.consecutive_losses = 0
                 self.buy_price = None
         self.order = None
 
@@ -176,52 +182,45 @@ class JExtremeStrategy(bt.Strategy):
         if self.order:
             return
 
+        # 冷却期倒计时
+        if self.cooldown > 0:
+            self.cooldown -= 1
+            return
+
         if not self.position:
-            j_ok = self.j_line[0] < self.p.j_buy_threshold
-            k_ok = self.k_line[0] < self.p.k_buy_threshold
-            d_ok = self.d_line[0] < self.p.d_buy_threshold
-            yang = self.data.close[0] > self.data.open[0]
-            volume_surge = (
-                self.data.volume[0] > self.data.volume[-1] * self.p.volume_ratio
-            )
+            # 连续亏损2次 冷却30天
+            if self.consecutive_losses >= 2:
+                self.log(f"连续亏损{self.consecutive_losses}次，冷却30天")
+                self.cooldown = 30
+                self.consecutive_losses = 0
+                return
 
-            # 新增：强势股过滤
-            above_ma60 = self.data.close[0] > self.ma60[0]
-            ma60_rising = self.ma60[0] > self.ma60[-10]
+            k_oversold = self.k_line[0] < self.p.k_threshold
+            j_oversold = self.j_line[0] < self.p.j_threshold
+            above_ma20 = self.data.close[0] > self.ma20[0]
 
-            if (
-                j_ok
-                and k_ok
-                and d_ok
-                and yang
-                and volume_surge
-                and above_ma60
-                and ma60_rising
-            ):
+            if k_oversold and j_oversold and above_ma20:
                 self.log(
-                    f"买入信号 | J={self.j_line[0]:.1f} K={self.k_line[0]:.1f} "
-                    f"D={self.d_line[0]:.1f} | MA60={self.ma60[0]:.2f}"
+                    f"买入信号 | K={self.k_line[0]:.1f} "
+                    f"D={self.d_line[0]:.1f} J={self.j_line[0]:.1f} "
+                    f"MA20={self.ma20[0]:.2f}"
                 )
                 self.order = self.buy()
-
         else:
-            # ── 卖出条件 ──────────────────────────
             current_price = self.data.close[0]
 
-            j_overbought = self.j_line[0] > self.p.j_sell_threshold  # J > 85
-            take_profit = (
-                current_price - self.buy_price
-            ) / self.buy_price >= self.p.profit_target  # 涨15%
+            # J>70卖出（原来是死叉卖出）
+            j_overbought = self.j_line[0] > 70
+
+            # 止损8%
             stop_loss = (
-                current_price - self.buy_price
-            ) / self.buy_price <= -self.p.stop_loss  # 跌8%
+                self.buy_price is not None
+                and (current_price - self.buy_price) / self.buy_price
+                <= -self.p.stop_loss
+            )
 
             if j_overbought:
                 self.log(f"J线卖出 | J={self.j_line[0]:.1f}")
-                self.order = self.sell()
-            elif take_profit:
-                gain = (current_price - self.buy_price) / self.buy_price * 100
-                self.log(f"止盈卖出 | 涨幅={gain:.1f}%")
                 self.order = self.sell()
             elif stop_loss:
                 loss = (current_price - self.buy_price) / self.buy_price * 100
