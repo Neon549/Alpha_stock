@@ -25,9 +25,9 @@ class KDJOversoldStrategy(bt.Strategy):
     params = dict(
         kdj_period=9,
         kdj_signal=3,
-        k_threshold=20,
-        d_threshold=30,
-        j_threshold=10,
+        k_threshold=25,  # 保持不变
+        d_threshold=15,  # 从30改为15
+        j_threshold=15,  # 保持不变
         stop_loss=0.08,
         printlog=True,
     )
