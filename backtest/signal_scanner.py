@@ -117,7 +117,38 @@ def scan_today(
             else:
                 print(f"⏳ 无信号")
         except Exception as e:
-            print(f"❌ 失败: {e}")
+            if "频率超限" in str(e):
+                print(f"⚠️ 频率超限，等待60秒...")
+                import time
+
+                time.sleep(60)
+                try:
+                    df = get_stock_data_incremental(
+                        code, base_start=base_start, token=token
+                    )
+                    import time
+
+                    time.sleep(1.2)  # 限速50次/分钟
+                    result = check_signal(df)
+                    if result["signal"]:
+                        print(f"🟢 买点! K={result['k']} J={result['j']}")
+                        results.append(
+                            {
+                                "code": code,
+                                "name": name,
+                                "k": result["k"],
+                                "j": result["j"],
+                                "close": result["close"],
+                                "ma20": result["ma20"],
+                                "conditions": result["conditions"],
+                            }
+                        )
+                    else:
+                        print(f"⏳ 无信号")
+                except Exception as e2:
+                    print(f"❌ 重试失败: {e2}")
+            else:
+                print(f"❌ 失败: {e}")
 
     results.sort(key=lambda x: x["j"])
     return results[:top_n]
