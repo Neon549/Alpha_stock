@@ -18,7 +18,6 @@ from backtest.signal_scanner import scan_today
 from agents.fundamental_analyst import run_fundamental_analysis
 from agents.technical_analyst import run_technical_analysis
 from agents.sentiment_analyst import run_sentiment_analysis
-from agents.researcher import run_researcher
 from agents.validator import run_validator
 
 
@@ -51,7 +50,6 @@ def analyze_node(state: ScanState) -> ScanState:
             fundamental = run_fundamental_analysis(code)
             technical = run_technical_analysis(code)
             sentiment = run_sentiment_analysis(code)
-            researcher = run_researcher(fundamental, technical, sentiment)
 
             # 验证Agent
             validation = run_validator(
@@ -59,7 +57,7 @@ def analyze_node(state: ScanState) -> ScanState:
                 fundamental_report=fundamental,
                 technical_report=technical,
                 sentiment_report=sentiment,
-                researcher_analysis=researcher,
+                researcher_analysis="",  # 无researcher
             )
 
             results.append(
