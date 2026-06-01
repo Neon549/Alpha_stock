@@ -109,7 +109,7 @@ class KDJOversoldStrategy(bt.Strategy):
         else:
             current_price = self.data.close[0]
 
-            j_overbought = self.j_line[0] > 70
+            j_overbought = self.j_line[0] > 80
 
             # 止盈
             take_profit = (
