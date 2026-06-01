@@ -414,7 +414,7 @@ class KDJCrossStrategy(bt.Strategy):
         kdj_signal=3,
         buy_threshold=50,  # 只在K<50的低位金叉买入
         stop_loss=0.07,
-        take_profit=0.12,
+        take_profit=0.08,  # 止盈8%，更容易落袋
         ma20_lookback=5,  # MA20趋势判断回看天数
         printlog=True,
     )
