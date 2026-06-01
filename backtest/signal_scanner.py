@@ -50,24 +50,46 @@ def check_signal(df: pd.DataFrame) -> dict:
     # 近20天涨跌幅
     recent_return = (latest["close"] - df.iloc[-20]["close"]) / df.iloc[-20]["close"]
 
+    # 成交量
+    avg_vol = df["volume"].iloc[-6:-1].mean()
+    vol_confirm = latest["volume"] > avg_vol * 1.2
+
+    # ── 信号1：KDJ超卖左侧入场 ──────────────
     k_ok = k < 25
     j_ok = j < 15
     k_rising = k > k_prev
     j_rising = j > j_prev
     not_crash = recent_return > -0.15
 
-    signal = k_ok and j_ok and k_rising and j_rising and not_crash
+    signal_oversold = (
+        k_ok and j_ok and k_rising and j_rising and not_crash and vol_confirm
+    )
+
+    # ── 信号2：低位KDJ金叉 ──────────────────
+    golden_cross = k_prev < j_prev and k > j  # K上穿J
+    low_position = k < 50  # 低位
+
+    signal_cross = golden_cross and low_position and not_crash and vol_confirm
+
+    signal = signal_oversold or signal_cross
+
+    signal_type = []
+    if signal_oversold:
+        signal_type.append("KDJ超卖")
+    if signal_cross:
+        signal_type.append("KDJ金叉")
 
     conditions = [
-        f"K={k} {'✅' if k_ok else '❌'}(需<25)",
-        f"J={j} {'✅' if j_ok else '❌'}(需<15)",
-        f"K回升 {k_prev}→{k} {'✅' if k_rising else '❌'}",
-        f"J回升 {j_prev}→{j} {'✅' if j_rising else '❌'}",
-        f"近20天涨跌{recent_return*100:.1f}% {'✅' if not_crash else '❌'}(需>-15%)",
+        f"K={k} J={j}",
+        f"近20天涨跌{recent_return*100:.1f}% {'✅' if not_crash else '❌'}",
+        f"成交量放大 {'✅' if vol_confirm else '❌'}",
+        f"超卖信号 {'✅' if signal_oversold else '❌'}",
+        f"金叉信号 {'✅' if signal_cross else '❌'}",
     ]
 
     return {
         "signal": signal,
+        "signal_type": "+".join(signal_type) if signal_type else "无",
         "k": k,
         "j": j,
         "close": close,
@@ -110,7 +132,7 @@ def scan_today(
                         "k": result["k"],
                         "j": result["j"],
                         "close": result["close"],
-                        "ma20": result["ma20"],
+                        "signal_type": result.get("signal_type", ""),
                         "conditions": result["conditions"],
                     }
                 )
