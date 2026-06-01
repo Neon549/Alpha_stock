@@ -48,11 +48,11 @@ OPTIMIZER_PROMPT = """你是一位专业的量化策略优化专家。
 请分析当前策略的主要问题，并给出下一轮参数调整建议。
 
 参数范围限制：
-- k_threshold: 15~40（KDJ的K线超卖阈值）
-- j_threshold: 0~25（J线超卖阈值）
-- stop_loss: 0.05~0.15（止损比例）
-- take_profit: 0.05~0.20（止盈比例）
-- crash_filter: 0.10~0.25（近20天最大跌幅过滤）
+- k_threshold: 15~40
+- j_threshold: 0~25
+- stop_loss: 0.05~0.10   # 左侧入场止损要小
+- take_profit: 0.08~0.20  # 止盈空间大一点
+- crash_filter: 0.10~0.25
 
 严格输出JSON格式，不要有任何其他文字：
 {{
@@ -104,8 +104,8 @@ def auto_optimize(
     params = {
         "k_threshold": 25,
         "j_threshold": 15,
-        "stop_loss": 0.08,
-        "take_profit": 0.08,
+        "stop_loss": 0.07,
+        "take_profit": 0.12,
         "crash_filter": 0.15,
     }
 
