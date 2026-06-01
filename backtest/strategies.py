@@ -94,9 +94,8 @@ class KDJOversoldStrategy(bt.Strategy):
             k_oversold = self.k_line[0] < self.p.k_threshold
             j_oversold = self.j_line[0] < self.p.j_threshold
             above_ma20 = self.data.close[0] > self.ma20[0]
-            ma20_rising = self.ma20[0] > self.ma20[-5]
 
-            if k_oversold and j_oversold and above_ma20 and ma20_rising:
+            if k_oversold and j_oversold and above_ma20:
                 self.log(
                     f"买入信号 | K={self.k_line[0]:.1f} "
                     f"D={self.d_line[0]:.1f} J={self.j_line[0]:.1f}"
