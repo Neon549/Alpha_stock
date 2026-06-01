@@ -124,6 +124,10 @@ def validation_node(state: TradingState) -> dict:
     if _contains_error(sentiment_report):
         errors.append("情绪分析存在工具错误或数据不足")
 
+        # 只有三个都失败才中止，允许部分失败继续分析
+    if len(errors) >= 3:
+        print("❌ 校验失败，三个分析师全部异常，系统将中止后续决策")
+
     # company_names = _extract_company_names(
     #     fundamental_report,
     #     technical_report,
@@ -145,9 +149,7 @@ def validation_node(state: TradingState) -> dict:
         }
 
     print("✅ 校验通过，进入研究员节点")
-    return {
-        "risk_assessment": "校验通过"
-    }
+    return {"risk_assessment": "校验通过"}
 
 
 def should_continue_after_validation(state: TradingState) -> str:
@@ -270,6 +272,7 @@ def trader_node(state: TradingState) -> dict:
     print("✅ 交易决策完成并已存入记忆")
     return {"final_decision": decision}
 
+
 def backtest_node(state: TradingState) -> dict:
     """
     回测节点：解析用户的回测请求，调用回测引擎
@@ -278,10 +281,10 @@ def backtest_node(state: TradingState) -> dict:
     print("\n📊 [回测节点] 开始执行量化回测...")
 
     req = state.get("backtest_request") or {}
-    stock_code  = req.get("stock_code",  state.get("stock_code", ""))
-    strategy    = req.get("strategy",    "kdj_macd")
-    start_date  = req.get("start_date",  "20220101")
-    end_date    = req.get("end_date",    "20261231")
+    stock_code = req.get("stock_code", state.get("stock_code", ""))
+    strategy = req.get("strategy", "kdj_macd")
+    start_date = req.get("start_date", "20220101")
+    end_date = req.get("end_date", "20261231")
     initial_cash = req.get("initial_cash", 100000.0)
 
     if not stock_code:
@@ -290,13 +293,15 @@ def backtest_node(state: TradingState) -> dict:
             "backtest_summary": "回测失败：未提供股票代码。",
         }
 
-    result = run_strategy_backtest.invoke({
-        "stock_code":   stock_code,
-        "strategy":     strategy,
-        "start_date":   start_date,
-        "end_date":     end_date,
-        "initial_cash": initial_cash,
-    })
+    result = run_strategy_backtest.invoke(
+        {
+            "stock_code": stock_code,
+            "strategy": strategy,
+            "start_date": start_date,
+            "end_date": end_date,
+            "initial_cash": initial_cash,
+        }
+    )
 
     print(f"✅ 回测完成")
     return {"backtest_report": result}
@@ -358,6 +363,7 @@ def backtest_interpreter_node(state: TradingState) -> dict:
 
     return {"backtest_summary": summary}
 
+
 def backtest_optimizer_node(state: TradingState) -> dict:
     """
     参数优化节点：对当前策略执行网格搜索，找到最优参数组合
@@ -366,10 +372,10 @@ def backtest_optimizer_node(state: TradingState) -> dict:
     print("\n⚙️ [优化节点] 开始参数网格搜索...")
 
     req = state.get("backtest_request") or {}
-    stock_code  = req.get("stock_code", state.get("stock_code", ""))
-    strategy    = req.get("strategy", "kdj_macd")
-    start_date  = req.get("start_date", "20220101")
-    end_date    = req.get("end_date", "20261231")
+    stock_code = req.get("stock_code", state.get("stock_code", ""))
+    strategy = req.get("strategy", "kdj_macd")
+    start_date = req.get("start_date", "20220101")
+    end_date = req.get("end_date", "20261231")
 
     try:
         import os
@@ -393,11 +399,16 @@ def backtest_optimizer_node(state: TradingState) -> dict:
             result_summary=opt_report[:500],
         )
 
-        return {"backtest_summary": state.get("backtest_summary", "") + "\n\n---\n" + opt_report}
+        return {
+            "backtest_summary": state.get("backtest_summary", "")
+            + "\n\n---\n"
+            + opt_report
+        }
 
     except Exception as e:
         print(f"[Optimizer] 优化失败: {e}")
         return {}
+
 
 def build_trading_graph():
     """
@@ -438,6 +449,7 @@ def build_trading_graph():
 
     return graph.compile()
 
+
 def build_backtest_graph():
     graph = StateGraph(TradingState)
     graph.add_node("backtest", backtest_node)
@@ -450,8 +462,10 @@ def build_backtest_graph():
     graph.add_edge("backtest_optimizer", END)
     return graph.compile()
 
+
 backtest_graph = build_backtest_graph()
 trading_graph = build_trading_graph()
+
 
 def run_trading_analysis(stock_code: str) -> dict:
     initial_state = {
@@ -468,6 +482,7 @@ def run_trading_analysis(stock_code: str) -> dict:
     }
     return trading_graph.invoke(initial_state)
 
+
 def run_backtest_analysis(
     stock_code: str,
     strategy: str = "kdj_macd",
@@ -480,23 +495,23 @@ def run_backtest_analysis(
     供 api/routes.py 的 /backtest 接口调用
     """
     initial_state = {
-        "stock_code":  stock_code,
+        "stock_code": stock_code,
         "fundamental_report": None,
-        "technical_report":   None,
-        "sentiment_report":   None,
-        "bull_argument":      None,
-        "bear_argument":      None,
-        "debate_rounds":      0,
-        "final_decision":     None,
-        "risk_assessment":    None,
+        "technical_report": None,
+        "sentiment_report": None,
+        "bull_argument": None,
+        "bear_argument": None,
+        "debate_rounds": 0,
+        "final_decision": None,
+        "risk_assessment": None,
         "backtest_request": {
-            "stock_code":   stock_code,
-            "strategy":     strategy,
-            "start_date":   start_date,
-            "end_date":     end_date,
+            "stock_code": stock_code,
+            "strategy": strategy,
+            "start_date": start_date,
+            "end_date": end_date,
             "initial_cash": initial_cash,
         },
-        "backtest_report":  None,
+        "backtest_report": None,
         "backtest_summary": None,
         "messages": [],
     }
