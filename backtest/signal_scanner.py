@@ -68,8 +68,12 @@ def check_signal(df: pd.DataFrame) -> dict:
     # ── 信号2：低位KDJ金叉 ──────────────────
     golden_cross = k_prev < j_prev and k > j  # K上穿J
     low_position = k < 50  # 低位
+    # 趋势过滤：MA20近5天必须向上，避免在下跌趋势中反复抄底
+    ma20_rising = float(df["MA20"].iloc[-1]) > float(df["MA20"].iloc[-6])
 
-    signal_cross = golden_cross and low_position and not_crash and vol_confirm
+    signal_cross = (
+        golden_cross and low_position and not_crash and vol_confirm and ma20_rising
+    )
 
     signal = signal_oversold or signal_cross
 
@@ -79,10 +83,13 @@ def check_signal(df: pd.DataFrame) -> dict:
     if signal_cross:
         signal_type.append("KDJ金叉")
 
+    ma20_val = round(float(df["MA20"].iloc[-1]), 2)
+
     conditions = [
         f"K={k} J={j}",
         f"近20天涨跌{recent_return*100:.1f}% {'✅' if not_crash else '❌'}",
         f"成交量放大 {'✅' if vol_confirm else '❌'}",
+        f"MA20趋势向上 {'✅' if ma20_rising else '❌'}（金叉过滤）",
         f"超卖信号 {'✅' if signal_oversold else '❌'}",
         f"金叉信号 {'✅' if signal_cross else '❌'}",
     ]
@@ -93,6 +100,7 @@ def check_signal(df: pd.DataFrame) -> dict:
         "k": k,
         "j": j,
         "close": close,
+        "ma20": ma20_val,
         "conditions": conditions,
     }
 
@@ -132,6 +140,7 @@ def scan_today(
                         "k": result["k"],
                         "j": result["j"],
                         "close": result["close"],
+                        "ma20": result["ma20"],
                         "signal_type": result.get("signal_type", ""),
                         "conditions": result["conditions"],
                     }
@@ -162,6 +171,7 @@ def scan_today(
                                 "j": result["j"],
                                 "close": result["close"],
                                 "ma20": result["ma20"],
+                                "signal_type": result.get("signal_type", ""),
                                 "conditions": result["conditions"],
                             }
                         )
