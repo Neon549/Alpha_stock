@@ -406,7 +406,7 @@ class BOLLStrategy(bt.Strategy):
 class KDJCrossStrategy(bt.Strategy):
     """
     KDJ金叉买入 + 死叉卖出
-    只在低位（K<50）金叉才买入
+    只在低位（K<50）且MA20趋势向上时才买入，避免下跌趋势中反复抄底
     """
 
     params = dict(
@@ -415,6 +415,7 @@ class KDJCrossStrategy(bt.Strategy):
         buy_threshold=50,  # 只在K<50的低位金叉买入
         stop_loss=0.07,
         take_profit=0.12,
+        ma20_lookback=5,  # MA20趋势判断回看天数
         printlog=True,
     )
 
@@ -429,6 +430,7 @@ class KDJCrossStrategy(bt.Strategy):
         self.d_line = self.stoch.percD
         self.j_line = self.k_line * 3 - self.d_line * 2
         self.kdj_cross = btind.CrossOver(self.k_line, self.d_line)
+        self.ma20 = btind.SMA(self.data.close, period=20)  # MA20趋势过滤
         self.order = None
         self.buy_price = None
 
@@ -455,12 +457,15 @@ class KDJCrossStrategy(bt.Strategy):
             return
 
         if not self.position:
-            # 低位金叉买入
+            # 低位金叉 + MA20趋势向上才买入
             golden_cross = self.kdj_cross[0] > 0
             low_position = self.k_line[0] < self.p.buy_threshold
+            ma20_rising = self.ma20[0] > self.ma20[-self.p.ma20_lookback]
 
-            if golden_cross and low_position:
-                self.log(f"金叉买入 | K={self.k_line[0]:.1f} D={self.d_line[0]:.1f}")
+            if golden_cross and low_position and ma20_rising:
+                self.log(
+                    f"金叉买入 | K={self.k_line[0]:.1f} D={self.d_line[0]:.1f} MA20↑"
+                )
                 self.order = self.buy()
         else:
             current_price = self.data.close[0]
