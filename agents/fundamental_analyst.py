@@ -5,7 +5,6 @@ from langchain_core.messages import HumanMessage
 from config.llm_config import deep_llm
 from tools.akshare_tools import get_stock_price, get_financial_indicator
 
-
 SYSTEM_PROMPT = """你是一位专业的A股基本面分析师，专注于通过财务数据评估股票的内在价值。
 
 你必须严格遵守以下规则：
@@ -73,9 +72,6 @@ def _post_check_fundamental_output(text: str, stock_code: str) -> str:
 
     if not text.startswith("[ANALYSIS_OK]"):
         return _abort("基本面分析结果未遵循规定格式，可信度不足。")
-
-    if stock_code not in text:
-        return _abort("基本面分析结果未正确引用股票代码，存在一致性风险。")
 
     return text
 

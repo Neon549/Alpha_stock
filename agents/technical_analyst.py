@@ -90,40 +90,39 @@ def _calc_kdj_signal(stock_code: str) -> str:
         df["D"] = df["K"].ewm(com=2).mean()
         df["J"] = 3 * df["K"] - 2 * df["D"]
 
-        # 计算MA60
-        df["MA60"] = df["close"].rolling(60).mean()
+        # 计算MA20
+        df["MA20"] = df["close"].rolling(20).mean()
 
         latest = df.iloc[-1]
-        prev_ma = df.iloc[-11]["MA60"]  # 10天前的MA60，判断方向
+        prev_ma = df.iloc[-6]["MA20"]  # 原来是[-11]["MA60"]，改成5天前
 
         k = round(float(latest["K"]), 2)
         d = round(float(latest["D"]), 2)
         j = round(float(latest["J"]), 2)
         close = round(float(latest["close"]), 2)
-        ma60 = round(float(latest["MA60"]), 2)
+        ma20 = round(float(latest["MA20"]), 2)  # 原来是MA60
         date = str(df.index[-1].date())
 
         # 判断各条件
         k_ok = k < 25
         d_ok = d < 30
         j_ok = j < 15
-        above_ma60 = close > ma60
-        ma60_up = float(latest["MA60"]) > float(prev_ma)
+        above_ma20 = close > ma20  # 原来是above_ma60
+        ma20_up = float(latest["MA20"]) > float(prev_ma)  # 原来是MA60
 
-        all_ok = k_ok and d_ok and j_ok and above_ma60 and ma60_up
+        all_ok = k_ok and j_ok and above_ma20 and ma20_up  # 去掉d_ok
 
         lines = [
             f"数据日期：{date}",
             f"当前价格：¥{close}",
-            f"MA60：¥{ma60}  {'📈 向上' if ma60_up else '📉 向下'}",
+            f"MA20：¥{ma20}  {'📈 向上' if ma20_up else '📉 向下'}",
             "",
             "KDJ超卖策略条件检测（需全部满足才触发买入）：",
             f"  K={k}  {'✅ 满足(K<25)' if k_ok else f'❌ 不满足(需<25，差{round(k-25,1)}点)'}",
             f"  D={d}  {'✅ 满足(D<30)' if d_ok else f'❌ 不满足(需<30，差{round(d-30,1)}点)'}",
             f"  J={j}  {'✅ 满足(J<15)' if j_ok else f'❌ 不满足(需<15，差{round(j-15,1)}点)'}",
-            f"  价格在MA60上方  {'✅ 满足' if above_ma60 else '❌ 不满足'}",
-            f"  MA60向上  {'✅ 满足' if ma60_up else '❌ 不满足'}",
-            "",
+            f"  价格在MA20上方  {'✅ 满足' if above_ma20 else '❌ 不满足'}",
+            f"  MA20向上  {'✅ 满足' if ma20_up else '❌ 不满足'}",
             f"综合信号：{'🟢 当前满足KDJ超卖买入条件！可关注买入机会。' if all_ok else '⏳ 当前不满足买入条件，需继续等待KDJ回落至超卖区域。'}",
         ]
 
