@@ -403,10 +403,103 @@ class BOLLStrategy(bt.Strategy):
                 self.order = self.sell()
 
 
+class KDJCrossStrategy(bt.Strategy):
+    """
+    KDJ金叉买入 + 死叉卖出
+    只在低位（K<50）金叉才买入
+    """
+
+    params = dict(
+        kdj_period=9,
+        kdj_signal=3,
+        buy_threshold=50,  # 只在K<50的低位金叉买入
+        stop_loss=0.07,
+        take_profit=0.12,
+        printlog=True,
+    )
+
+    def __init__(self):
+        self.stoch = btind.Stochastic(
+            self.data,
+            period=self.p.kdj_period,
+            period_dfast=self.p.kdj_signal,
+            period_dslow=self.p.kdj_signal,
+        )
+        self.k_line = self.stoch.percK
+        self.d_line = self.stoch.percD
+        self.j_line = self.k_line * 3 - self.d_line * 2
+        self.kdj_cross = btind.CrossOver(self.k_line, self.d_line)
+        self.order = None
+        self.buy_price = None
+
+    def log(self, txt, dt=None):
+        if self.p.printlog:
+            dt = dt or self.datas[0].datetime.date(0)
+            print(f"[{dt}] [KDJ金叉] {txt}")
+
+    def notify_order(self, order):
+        if order.status in [order.Submitted, order.Accepted]:
+            return
+        if order.status == order.Completed:
+            if order.isbuy():
+                self.buy_price = order.executed.price
+                self.log(f"买入成交 | ¥{order.executed.price:.2f}")
+            else:
+                gain = (order.executed.price - self.buy_price) / self.buy_price * 100
+                self.log(f"卖出成交 | ¥{order.executed.price:.2f} | 盈亏:{gain:+.1f}%")
+                self.buy_price = None
+        self.order = None
+
+    def next(self):
+        if self.order:
+            return
+
+        if not self.position:
+            # 低位金叉买入
+            golden_cross = self.kdj_cross[0] > 0
+            low_position = self.k_line[0] < self.p.buy_threshold
+
+            if golden_cross and low_position:
+                self.log(f"金叉买入 | K={self.k_line[0]:.1f} D={self.d_line[0]:.1f}")
+                self.order = self.buy()
+        else:
+            current_price = self.data.close[0]
+
+            # 死叉卖出
+            death_cross = self.kdj_cross[0] < 0
+
+            # 止盈
+            take_profit = (
+                self.buy_price is not None
+                and (current_price - self.buy_price) / self.buy_price
+                >= self.p.take_profit
+            )
+
+            # 止损
+            stop_loss = (
+                self.buy_price is not None
+                and (current_price - self.buy_price) / self.buy_price
+                <= -self.p.stop_loss
+            )
+
+            if death_cross:
+                self.log(f"死叉卖出 | K={self.k_line[0]:.1f} D={self.d_line[0]:.1f}")
+                self.order = self.sell()
+            elif take_profit:
+                gain = (current_price - self.buy_price) / self.buy_price * 100
+                self.log(f"止盈卖出 | 涨幅={gain:.1f}%")
+                self.order = self.sell()
+            elif stop_loss:
+                loss = (current_price - self.buy_price) / self.buy_price * 100
+                self.log(f"止损卖出 | 跌幅={loss:.1f}%")
+                self.order = self.sell()
+
+
 STRATEGY_MAP = {
     "kdj_macd": KDJMACDStrategy,
     "rsi": RSIStrategy,
     "boll": BOLLStrategy,
     "j_extreme": JExtremeStrategy,  # 新增
     "kdj_oversold": KDJOversoldStrategy,
+    "kdj_cross": KDJCrossStrategy,
 }
