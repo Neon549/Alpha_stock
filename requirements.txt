@@ -17,7 +17,7 @@ plotly
 requests
 sentence-transformers
 faiss-cpu
-
+chromadb
 # ── 新增：量化回测 ──
 tushare
 backtrader
