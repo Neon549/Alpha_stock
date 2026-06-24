@@ -12,7 +12,8 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env", override=True)
 
-API_BASE = "https://neonzz-neon-stock-trading-agent.hf.space/api/v1"
+API_BASE = "http://localhost:8000/api/v1"
+
 
 st.set_page_config(
     page_title="A股量化分析系统",
@@ -116,32 +117,45 @@ with st.sidebar:
 
     # 板块选股
     st.markdown("**板块选股**")
-    from backtest.stock_universe import STOCK_UNIVERSE, list_sectors
 
-    selected_sector = st.selectbox(
-        "一级板块",
-        list_sectors(),
-        label_visibility="collapsed",
-        key="sidebar_sector",
-    )
+    sectors_resp = None
+    for _ in range(3):
+        try:
+            sectors_resp = requests.get(f"{API_BASE}/backtest/sectors", timeout=15)
+            if sectors_resp.status_code == 200:
+                break
+        except:
+            time.sleep(2)
 
-    sector_stocks = STOCK_UNIVERSE.get(selected_sector, {})
-    stock_options = {f"{name} {code}": code for code, name in sector_stocks.items()}
-
-    selected_stock_label = st.selectbox(
-        "选择股票",
-        ["自定义"] + list(stock_options.keys()),
-        label_visibility="collapsed",
-        key="sidebar_stock",
-    )
-
-    # 确认按钮同步股票代码
-    if selected_stock_label != "自定义":
-        preview_code = stock_options[selected_stock_label]
-        if st.session_state.selected_code != preview_code:
-            st.session_state.selected_code = preview_code
-            st.rerun()
-
+    if sectors_resp and sectors_resp.status_code == 200:
+        try:
+            sectors_data = sectors_resp.json().get("sectors", {})
+            sector_names = list(sectors_data.keys())
+            selected_sector = st.selectbox(
+                "一级板块",
+                sector_names,
+                label_visibility="collapsed",
+                key="sidebar_sector",
+            )
+            sector_stocks = sectors_data.get(selected_sector, [])
+            stock_options = {
+                f"{s['name']} {s['code']}": s["code"] for s in sector_stocks
+            }
+            selected_stock_label = st.selectbox(
+                "选择股票",
+                ["自定义"] + list(stock_options.keys()),
+                label_visibility="collapsed",
+                key="sidebar_stock",
+            )
+            if selected_stock_label != "自定义":
+                preview_code = stock_options[selected_stock_label]
+                if st.session_state.selected_code != preview_code:
+                    st.session_state.selected_code = preview_code
+                    st.rerun()
+        except Exception as e:
+            st.warning(f"板块数据解析失败: {e}")
+    else:
+        st.warning("板块数据获取失败")
 
 # ══════════════════════════════════════════════
 # 模式1：AI智能分析
@@ -241,9 +255,10 @@ elif mode == "📊 量化回测":
     with col2:
         strategy = st.selectbox(
             "策略",
-            ["kdj_oversold", "j_extreme", "rsi", "boll", "kdj_macd"],
+            ["kdj_oversold", "kdj_cross", "j_extreme", "rsi", "boll", "kdj_macd"],
             format_func=lambda x: {
                 "kdj_oversold": "KDJ超卖",
+                "kdj_cross": "KDJ金叉",
                 "j_extreme": "J极值",
                 "rsi": "RSI",
                 "boll": "布林带",
@@ -388,16 +403,21 @@ elif mode == "📊 量化回测":
 # 模式3：板块筛选
 # ══════════════════════════════════════════════
 elif mode == "🔍 板块筛选":
-    from backtest.stock_universe import STOCK_UNIVERSE, list_sectors
-    from backtest.fundamental_filter import filter_stocks
-
     st.markdown(
         '<div class="section-title">板块基本面筛选</div>', unsafe_allow_html=True
     )
 
+    try:
+        sectors_resp = requests.get(f"{API_BASE}/backtest/sectors", timeout=5)
+        sectors_data = sectors_resp.json().get("sectors", {})
+        sector_names = list(sectors_data.keys())
+    except:
+        sectors_data = {}
+        sector_names = []
+
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        sector = st.selectbox("选择板块", list_sectors())
+        sector = st.selectbox("选择板块", sector_names)
     with col2:
         min_score = st.slider("最低评分", 50, 90, 65)
     with col3:
@@ -405,35 +425,39 @@ elif mode == "🔍 板块筛选":
 
     filter_btn = st.button("🔍 开始筛选", type="primary", use_container_width=True)
 
-    if filter_btn:
-        with st.spinner("拉取财务数据中..."):
-            stocks = STOCK_UNIVERSE.get(sector, {})
-            results = filter_stocks(stocks, min_score=min_score, top_n=top_n)
+    if filter_btn and sector:
+        with st.spinner("筛选中..."):
+            try:
+                resp = requests.post(
+                    f"{API_BASE}/backtest/filter",
+                    json={"sector": sector, "min_score": min_score, "top_n": top_n},
+                    timeout=120,
+                )
+                results = (
+                    resp.json().get("results", []) if resp.status_code == 200 else []
+                )
+            except Exception as e:
+                results = []
+                st.error(f"请求失败: {e}")
 
-        if not results:
-            st.warning("没有股票通过筛选")
-        else:
-            st.markdown(
-                f'<div class="section-title">{sector} — Top{len(results)}</div>',
-                unsafe_allow_html=True,
-            )
-
+        if results:
             df_show = pd.DataFrame(
                 [
                     {
                         "代码": r["code"],
                         "名称": r["name"],
                         "评分": r["score"],
-                        "PE": f"{r['pe']:.1f}" if r["pe"] else "N/A",
-                        "ROE": f"{r['roe']:.1f}%" if r["roe"] else "N/A",
+                        "PE": f"{r['pe']:.1f}" if r.get("pe") else "N/A",
+                        "ROE": f"{r['roe']:.1f}%" if r.get("roe") else "N/A",
                         "毛利率": (
-                            f"{r['gross_margin']:.1f}%" if r["gross_margin"] else "N/A"
+                            f"{r['gross_margin']:.1f}%"
+                            if r.get("gross_margin")
+                            else "N/A"
                         ),
                     }
                     for r in results
                 ]
             )
-
             st.dataframe(
                 df_show,
                 use_container_width=True,
@@ -441,17 +465,17 @@ elif mode == "🔍 板块筛选":
                 column_config={
                     "评分": st.column_config.ProgressColumn(
                         "评分", min_value=0, max_value=100
-                    ),
+                    )
                 },
             )
-
-            # 点击股票跳转回测
-            st.markdown("**选中股票直接使用：**")
             cols = st.columns(min(len(results), 5))
             for i, (col, r) in enumerate(zip(cols, results)):
                 if col.button(f"{r['name']}\n{r['code']}", key=f"pick_{i}"):
                     st.session_state.selected_code = r["code"]
                     st.rerun()
+        else:
+            st.warning("没有股票通过筛选")
+
 # ══════════════════════════════════════════════
 # 模式4: 今日买点
 # ══════════════════════════════════════════════

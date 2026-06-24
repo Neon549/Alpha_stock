@@ -3,51 +3,66 @@
 
 """
 @author: yulin
-@created: 2026/5/29 22:57
-@updated: 2026/5/29 22:57
-@version: 1.0
-@description: 
+@description: 策略文档RAG索引 —— ChromaDB版本
+原来用FAISS，现在迁移到ChromaDB
+改动点：
+  1. 去掉FAISS的save_local/load_local，ChromaDB自动持久化
+  2. 去掉手动embedding传入，ChromaDB内置embedding函数
+  3. retrieve_strategy_knowledge接口完全不变，trading_graph.py无需改动
 """
-# rag/strategy_indexer.py
-# 策略文档RAG索引构建器
-# 与现有 rag/indexer.py 分开，避免干扰股票新闻索引
 
-import os
 import threading
-from pathlib import Path
-from langchain_community.vectorstores import FAISS
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from chromadb.utils import embedding_functions
+import chromadb
 from rag.strategy_docs import STRATEGY_DOCUMENTS
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-STRATEGY_INDEX_PATH = "rag/faiss_index/strategy_knowledge"
+# ChromaDB持久化路径（替代原来的 rag/faiss_index/strategy_knowledge）
+CHROMA_DB_PATH = "./chroma_db"
+COLLECTION_NAME = "strategy_knowledge"
 
-_embeddings = None
-_embeddings_lock = threading.Lock()
+# 线程锁，保留原来的线程安全设计
+_client = None
+_collection = None
+_lock = threading.Lock()
 
 
-def get_embeddings():
-    global _embeddings
-    if _embeddings is None:
-        with _embeddings_lock:
-            if _embeddings is None:
-                _embeddings = HuggingFaceEmbeddings(
-                    model_name="shibing624/text2vec-base-chinese",
-                    model_kwargs={"device": "cpu"},
-                    encode_kwargs={"normalize_embeddings": True},
+def _get_collection():
+    """
+    单例模式获取ChromaDB collection
+    保留原来的线程安全单例设计
+    """
+    global _client, _collection
+    if _collection is None:
+        with _lock:
+            if _collection is None:
+                # 持久化客户端，数据自动存到./chroma_db，不用手动save
+                _client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+
+                # 用和原来一样的中文embedding模型
+                embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                    model_name="shibing624/text2vec-base-chinese"
                 )
-    return _embeddings
+
+                _collection = _client.get_or_create_collection(
+                    name=COLLECTION_NAME,
+                    embedding_function=embedding_fn,
+                    metadata={"hnsw:space": "cosine"},  # 余弦相似度，和FAISS一致
+                )
+
+                # 如果collection是空的，自动build索引
+                if _collection.count() == 0:
+                    _build_index(_collection)
+
+    return _collection
 
 
-def build_strategy_index() -> FAISS:
-    """构建策略知识库FAISS索引"""
-    print("🔨 构建策略知识库索引...")
-
-    texts = []
-    metadatas = []
-    for doc in STRATEGY_DOCUMENTS:
-        texts.append(f"{doc['title']}\n{doc['content']}")
-        metadatas.append({"title": doc["title"]})
+def _build_index(collection):
+    """
+    构建策略知识库索引
+    对应原来的 build_strategy_index()
+    """
+    print("🔨 构建策略知识库索引（ChromaDB）...")
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=300,
@@ -55,62 +70,84 @@ def build_strategy_index() -> FAISS:
         separators=["\n", "。", "，", " "],
     )
 
-    split_texts = []
-    split_metas = []
-    for text, meta in zip(texts, metadatas):
-        chunks = splitter.split_text(text)
-        split_texts.extend(chunks)
-        split_metas.extend([meta] * len(chunks))
+    documents = []
+    metadatas = []
+    ids = []
 
-    print(f"📄 切块完成：{len(STRATEGY_DOCUMENTS)}篇文档 → {len(split_texts)}个块")
+    idx = 0
+    for doc in STRATEGY_DOCUMENTS:
+        full_text = f"{doc['title']}\n{doc['content']}"
+        chunks = splitter.split_text(full_text)
 
-    embeddings = get_embeddings()
-    vectorstore = FAISS.from_texts(
-        texts=split_texts,
-        embedding=embeddings,
-        metadatas=split_metas,
+        for chunk in chunks:
+            documents.append(chunk)
+            metadatas.append({"title": doc["title"]})
+            ids.append(f"strategy_{idx}")
+            idx += 1
+
+    print(f"📄 切块完成：{len(STRATEGY_DOCUMENTS)}篇文档 → {len(documents)}个块")
+
+    # ChromaDB自动embedding，不需要手动调embedding模型
+    collection.add(
+        documents=documents,
+        metadatas=metadatas,
+        ids=ids,
     )
 
-    os.makedirs(STRATEGY_INDEX_PATH, exist_ok=True)
-    vectorstore.save_local(STRATEGY_INDEX_PATH)
-    print(f"💾 策略索引已保存: {STRATEGY_INDEX_PATH}")
-    return vectorstore
-
-
-def load_strategy_index() -> FAISS | None:
-    if not Path(STRATEGY_INDEX_PATH).exists():
-        return None
-    embeddings = get_embeddings()
-    return FAISS.load_local(
-        STRATEGY_INDEX_PATH,
-        embeddings,
-        allow_dangerous_deserialization=True,
-    )
-
-
-def get_or_build_strategy_index() -> FAISS:
-    vs = load_strategy_index()
-    if vs is None:
-        vs = build_strategy_index()
-    return vs
+    print(f"💾 策略索引已存入ChromaDB：{CHROMA_DB_PATH}/{COLLECTION_NAME}")
 
 
 def retrieve_strategy_knowledge(query: str, k: int = 2) -> str:
     """
     检索与query最相关的策略知识
     供 backtest_interpreter_node 调用
+
+    接口和原来完全一样，trading_graph.py无需改动
     """
     try:
-        vs = get_or_build_strategy_index()
-        docs = vs.similarity_search(query, k=k)
-        if not docs:
+        collection = _get_collection()
+
+        results = collection.query(
+            query_texts=[query],
+            n_results=k,
+        )
+
+        if not results["documents"] or not results["documents"][0]:
             return ""
-        results = []
-        for doc in docs:
-            results.append(
-                f"【{doc.metadata.get('title', '')}】\n{doc.page_content}"
-            )
-        return "\n\n".join(results)
+
+        output = []
+        for doc_text, meta in zip(results["documents"][0], results["metadatas"][0]):
+            title = meta.get("title", "")
+            output.append(f"【{title}】\n{doc_text}")
+
+        return "\n\n".join(output)
+
     except Exception as e:
         print(f"[StrategyRAG] 检索失败: {e}")
         return ""
+
+
+# ── 以下是原来有但现在不再需要的函数，保留空壳兼容旧代码 ────────────
+
+
+def build_strategy_index():
+    """
+    兼容旧接口，ChromaDB版本在首次get_collection时自动build
+    """
+    collection = _get_collection()
+    print(f"✅ 策略索引已就绪，当前共 {collection.count()} 个文档块")
+    return collection
+
+
+def load_strategy_index():
+    """
+    兼容旧接口，ChromaDB版本不需要手动load
+    """
+    return _get_collection()
+
+
+def get_or_build_strategy_index():
+    """
+    兼容旧接口
+    """
+    return _get_collection()

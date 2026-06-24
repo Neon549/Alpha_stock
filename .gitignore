@@ -1,6 +1,5 @@
 Set-Content .gitignore "venv/
 __pycache__/
-backtest/data_cache/
 reports/
 *.pyc
 .env

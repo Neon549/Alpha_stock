@@ -102,9 +102,9 @@ def auto_optimize(
 
     # 初始参数
     params = {
-        "k_threshold": 25,
-        "j_threshold": 15,
-        "stop_loss": 0.07,
+        "k_threshold": 20,
+        "j_threshold": 10,
+        "stop_loss": 0.08,
         "take_profit": 0.12,
         "crash_filter": 0.15,
     }

@@ -26,15 +26,12 @@ for sector, stocks in STOCK_UNIVERSE.items():
         market_cap = data.get("market_cap") or 0
         score = score_stock(data)
 
-        if score < 65:
+        if score < 50:
             continue
-        if price <= 0 or price > 100:
-            print(f"  {name}({code}) 跳过：股价{price:.1f}元")
-            continue
-        # 100-300亿
-        if not (20_000_000_000 < market_cap < 150_000_000_000):
+        # 200亿-2000亿（单位：元）
+        if not (20_000_000_000 < market_cap < 200_000_000_000):
             print(
-                f"  {name}({code}) 跳过：市值{market_cap/1e8:.0f}亿不在200-1500亿区间"
+                f"  {name}({code}) 跳过：市值{market_cap/1e8:.0f}亿不在200-2000亿区间"
             )
             continue
         qualified[code] = {"name": name, "sector": sector, "score": score}
@@ -50,19 +47,18 @@ for code, info in qualified.items():
         if len(df) < 60:
             continue
         stock_dfs[code] = df
-        result = run_backtest(df, strategy_name="kdj_oversold", printlog=False)
-        results.append(
-            {
-                "code": code,
-                "name": info["name"],
-                "sector": info["sector"],
-                "score": info["score"],
-                "total_return": result["total_return"],
-                "sharpe": result["sharpe"],
-                "max_drawdown": result["max_drawdown"],
-                "trade_count": result["trade_count"],
-                "win_rate": result["win_rate"],
-            }
+        result = run_backtest(
+            df=df,
+            strategy_name="kdj_oversold",
+            initial_cash=100000,
+            printlog=False,
+            strategy_params={
+                "k_threshold": 25,
+                "j_threshold": 15,
+                "stop_loss": 0.04,
+                "take_profit": 0.12,
+                "crash_filter": 0.15,
+            },
         )
         print(
             f"{info['name']}({code}): 收益={result['total_return']:+.1f}%"

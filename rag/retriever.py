@@ -28,5 +28,3 @@ def retrieve_stock_news(stock_code: str, query: str = "") -> str:
         return result
     except Exception as e:
         return f"新闻检索失败: {e}"
-
-
