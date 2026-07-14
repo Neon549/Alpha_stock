@@ -4,7 +4,9 @@ import os
 from langchain_core.messages import HumanMessage
 from config.llm_config import quick_llm
 from tools.akshare_tools import get_stock_price, get_stock_history
+from agents.skill_loader import load_skill_with_ref
 
+# ========== 兜底 SYSTEM_PROMPT（SKILL.md 找不到时使用）==========
 SYSTEM_PROMPT = """你是一位专业的A股技术面分析师，专注于通过价格和成交量数据判断股票的短中期走势。
 
 你必须严格遵守以下规则：
@@ -94,23 +96,23 @@ def _calc_kdj_signal(stock_code: str) -> str:
         df["MA20"] = df["close"].rolling(20).mean()
 
         latest = df.iloc[-1]
-        prev_ma = df.iloc[-6]["MA20"]  # 原来是[-11]["MA60"]，改成5天前
+        prev_ma = df.iloc[-6]["MA20"]  # 5天前
 
         k = round(float(latest["K"]), 2)
         d = round(float(latest["D"]), 2)
         j = round(float(latest["J"]), 2)
         close = round(float(latest["close"]), 2)
-        ma20 = round(float(latest["MA20"]), 2)  # 原来是MA60
+        ma20 = round(float(latest["MA20"]), 2)
         date = str(df.index[-1].date())
 
         # 判断各条件
         k_ok = k < 25
         d_ok = d < 30
         j_ok = j < 15
-        above_ma20 = close > ma20  # 原来是above_ma60
-        ma20_up = float(latest["MA20"]) > float(prev_ma)  # 原来是MA60
+        above_ma20 = close > ma20
+        ma20_up = float(latest["MA20"]) > float(prev_ma)
 
-        all_ok = k_ok and j_ok and above_ma20 and ma20_up  # 去掉d_ok
+        all_ok = k_ok and j_ok and above_ma20 and ma20_up
 
         lines = [
             f"数据日期：{date}",
@@ -151,6 +153,9 @@ def _post_check_technical_output(text: str, stock_code: str) -> str:
 
 
 def run_technical_analysis(stock_code: str) -> str:
+    # ✅ 从 SKILL.md 加载技术面规范（找不到则用兜底 SYSTEM_PROMPT）
+    system_prompt = load_skill_with_ref("stock_analysis", "technical_rules") or SYSTEM_PROMPT
+
     # 1) 调用行情工具
     history_result = get_stock_history.invoke({"symbol": stock_code, "days": 30})
     if "[TOOL_ERROR]" in history_result:
@@ -171,7 +176,7 @@ def run_technical_analysis(stock_code: str) -> str:
     kdj_signal = _calc_kdj_signal(stock_code)
 
     # 4) 让LLM综合分析
-    prompt = f"""{SYSTEM_PROMPT}
+    prompt = f"""{system_prompt}
 
 以下是工具已返回结果，请严格基于这些内容输出最终报告：
 
@@ -188,6 +193,49 @@ def run_technical_analysis(stock_code: str) -> str:
 {kdj_signal}
 """
 
+    # 优先用TechLens本地模型（低延迟、低成本）
+    from config.llm_config import techlens_client
+    if techlens_client.is_available():
+        try:
+            resp = techlens_client.analyze(stock_code, history_result, price_result, kdj_signal)
+            if resp.get("success") and resp.get("result"):
+                r = resp["result"]
+                if r.get("status") == "ABORT":
+                    return _abort(r.get("reason", "TechLens中止分析"))
+                sig = "KDJ满足超卖买入条件" if r["kdj"]["signal"] == "buy_ready" else "KDJ暂不满足买入条件"
+                trend_zh = {"bullish": "看多", "bearish": "看空", "neutral": "中性"}.get(r["trend"], r["trend"])
+                final_text = f"""[ANALYSIS_OK]
+## 技术面分析报告
+
+### 1. 股票信息核验
+股票代码：{r['stock_code']}
+数据可靠性：{r['confidence']}
+
+### 2. 趋势分析
+趋势方向：{r['trend']}
+
+### 3. 量价关系
+{r['volume_price']}
+
+### 4. 关键价位
+支撑位：{r['support']}
+压力位：{r['resistance']}
+
+### 5. 短期展望
+方向：{trend_zh}
+
+### 6. KDJ策略信号
+当前信号：K={r['kdj']['K']} D={r['kdj']['D']} J={r['kdj']['J']}
+操作建议：{sig}
+
+### 7. 综合结论
+{r['summary']}
+"""
+                return _post_check_technical_output(final_text, stock_code)
+        except Exception as e:
+            print(f"TechLens调用失败，降级到DeepSeek: {e}")
+
+    # 降级：调用DeepSeek云端API
     response = quick_llm.invoke([HumanMessage(content=prompt)])
     final_text = response.content
 
