@@ -1,12 +1,12 @@
 ---
-title: A股 Trading Agent System
+title: AlphaStock · 智能投研助手
 sdk: docker
 app_port: 7860
 ---
 
-# A股 Trading Agent System
+# AlphaStock · 智能投研助手
 
-基于 LangGraph Multi-Agent + RAG + 量化回测 的 A股智能分析系统。
+分析基本面、技术面、情绪面，结合Alpha因子回测，辅助A股交易决策。
 
 ## 项目简介
 
@@ -21,6 +21,7 @@ app_port: 7860
 - 数据校验节点（防止幻觉传播）
 
 **量化回测模块（新增）**
+
 - 多策略回测引擎（KDJ_MACD / RSI / 布林带）
 - Tushare Pro 真实A股历史数据接入（本地CSV缓存）
 - quantstats 专业绩效报告（夏普比率、最大回撤、月度热力图）
@@ -58,7 +59,7 @@ app_port: 7860
 | 绩效分析 | quantstats |
 | 历史数据 | Tushare Pro |
 | 实时行情 | AKShare + yfinance |
-| RAG向量库 | FAISS + HuggingFace Embeddings |
+| RAG向量库 | ChromaDB + HuggingFace Embeddings |
 | 长期记忆 | SQLite |
 | 后端API | FastAPI |
 | 部署 | Docker + Hugging Face Spaces |

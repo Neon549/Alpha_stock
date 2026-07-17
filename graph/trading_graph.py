@@ -1,5 +1,7 @@
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.sqlite import SqliteSaver
+import sqlite3
 
 from tools.backtest_tools import run_strategy_backtest, list_available_strategies
 from langchain_core.messages import HumanMessage
@@ -441,7 +443,12 @@ def build_trading_graph():
     graph.add_edge("backtest", "backtest_interpreter")
     graph.add_edge("backtest_interpreter", END)
 
-    return graph.compile()
+    # ✅ Checkpoint：每个节点执行完自动保存State快照
+    # Checkpoint持久化：每个节点执行完自动保存State到SQLite
+    # 重启后可恢复，支持断点续跑
+    conn = sqlite3.connect("checkpoints.db", check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
+    return graph.compile(checkpointer=checkpointer)
 
 
 def build_backtest_graph():
@@ -474,7 +481,9 @@ def run_trading_analysis(stock_code: str) -> dict:
         "risk_assessment": None,
         "messages": [],
     }
-    return trading_graph.invoke(initial_state)
+    # Checkpoint thread_id：同一股票用同一ID，支持断点恢复
+    config = {"configurable": {"thread_id": f"analysis_{stock_code}"}}
+    return trading_graph.invoke(initial_state, config=config)
 
 
 def run_backtest_analysis(
