@@ -5,14 +5,68 @@
 # 原有接口不变
 # ==================================
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional
 from graph.trading_graph import run_trading_analysis
 from memory.long_term import LongTermMemory
+from api.multimodal import analyze_image, process_document, retrieve_from_document, cleanup_session
 
 router = APIRouter()
 memory = LongTermMemory()
+
+
+def _apply_model_config(model: str):
+    """
+    根据前端选择的模型，动态切换后端LLM配置
+    fast:   DeepSeek-V3（快速便宜，适合选股筛选）
+    smart:  DeepSeek-R1（推理强，适合深度分析）默认
+    strong: DeepSeek-R1 + 更低temperature（严格，适合量化回测）
+    """
+    import config.llm_config as llm_cfg
+    from config.llm_config import FallbackLLM, _make_deepseek, _qwen_backup
+
+    if model == "fast":
+        # 用V3，快速便宜
+        llm_cfg.deep_llm = FallbackLLM(
+            primary=_make_deepseek("deepseek-chat", temperature=0.1),
+            backup=_qwen_backup,
+            name="DeepLLM[fast]"
+        )
+        llm_cfg.quick_llm = FallbackLLM(
+            primary=_make_deepseek("deepseek-chat", temperature=0.1),
+            backup=_qwen_backup,
+            name="QuickLLM[fast]"
+        )
+        print("[ModelConfig] 切换到 Fast 模式（DeepSeek-V3）")
+
+    elif model == "strong":
+        # R1 + 更低temperature，更严格
+        llm_cfg.deep_llm = FallbackLLM(
+            primary=_make_deepseek("deepseek-reasoner", temperature=0.0),
+            backup=_make_deepseek("deepseek-chat", temperature=0.0),
+            name="DeepLLM[strong]"
+        )
+        llm_cfg.quick_llm = FallbackLLM(
+            primary=_make_deepseek("deepseek-reasoner", temperature=0.0),
+            backup=_make_deepseek("deepseek-chat", temperature=0.0),
+            name="QuickLLM[strong]"
+        )
+        print("[ModelConfig] 切换到 Strong 模式（DeepSeek-R1, temp=0）")
+
+    else:
+        # smart（默认），R1推理 + V3快速
+        llm_cfg.deep_llm = FallbackLLM(
+            primary=_make_deepseek("deepseek-reasoner", temperature=0.1),
+            backup=_make_deepseek("deepseek-chat", temperature=0.1),
+            name="DeepLLM[smart]"
+        )
+        llm_cfg.quick_llm = FallbackLLM(
+            primary=_make_deepseek("deepseek-chat", temperature=0.1),
+            backup=_qwen_backup,
+            name="QuickLLM[smart]"
+        )
+        print("[ModelConfig] 切换到 Smart 模式（DeepSeek-R1）")
 
 
 # ── 原有模型 ────────────────────────────────
@@ -21,6 +75,8 @@ memory = LongTermMemory()
 class AnalyzeRequest(BaseModel):
     stock_code: str
     force_refresh: bool = False
+    model: str = "smart"  # fast / smart / strong
+    session_id: Optional[str] = None  # 用于关联上传的文档
 
 
 class AnalyzeResponse(BaseModel):
@@ -80,8 +136,20 @@ def analyze_stock(request: AnalyzeRequest):
         if not stock_code:
             raise HTTPException(status_code=400, detail="股票代码不能为空")
 
-        print(f"📨 收到分析请求：{stock_code}")
-        result = run_trading_analysis(stock_code)
+        model = request.model or "smart"
+        print(f"📨 收到分析请求：{stock_code} 模式：{model}")
+
+        # 根据模型参数动态切换LLM
+        _apply_model_config(model)
+
+        # 如果用户上传了文档，把文档内容注入到分析上下文
+        doc_context = ""
+        if request.session_id:
+            doc_context = retrieve_from_document(request.session_id, f"{stock_code} 财务 分析")
+            if doc_context:
+                print(f"[Analyze] 检索到用户上传文档内容：{len(doc_context)}字")
+
+        result = run_trading_analysis(stock_code, doc_context=doc_context)
 
         return AnalyzeResponse(
             stock_code=stock_code,
@@ -256,3 +324,85 @@ def scan_today_signals(request: ScanRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"扫描失败: {str(e)}")
+
+
+# ── 多模态上传接口 ──────────────────────────────────────────────────────
+
+
+@router.post("/upload/image")
+async def upload_image(
+        file: UploadFile = File(...),
+        question: str = Form(default=""),
+        session_id: str = Form(default=""),
+):
+    """
+    上传图片并用多模态LLM分析
+    适合：财报截图、K线图、公告截图
+    """
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="只支持图片文件")
+
+    max_size = 10 * 1024 * 1024  # 10MB
+    file_bytes = await file.read()
+    if len(file_bytes) > max_size:
+        raise HTTPException(status_code=400, detail="图片大小不能超过10MB")
+
+    print(f"[Upload] 收到图片：{file.filename}，大小：{len(file_bytes)/1024:.1f}KB")
+
+    result = analyze_image(file_bytes, file.content_type, question)
+    return {
+        "filename": file.filename,
+        "extracted_data": result["extracted_data"],
+        "analysis": result["analysis"],
+        "data_type": result["data_type"],
+        "status": "success",
+    }
+
+
+@router.post("/upload/document")
+async def upload_document(
+        file: UploadFile = File(...),
+        session_id: str = Form(default="default_session"),
+):
+    """
+    上传文档（PDF/Word/CSV/TXT）并存入临时向量库
+    分析时自动检索文档内容作为补充上下文
+    """
+    allowed_types = {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+        "text/plain",
+        "text/csv",
+        "application/vnd.ms-excel",
+    }
+
+    max_size = 20 * 1024 * 1024  # 20MB
+    file_bytes = await file.read()
+    if len(file_bytes) > max_size:
+        raise HTTPException(status_code=400, detail="文件大小不能超过20MB")
+
+    print(f"[Upload] 收到文档：{file.filename}，大小：{len(file_bytes)/1024:.1f}KB，session：{session_id[:8]}")
+
+    result = process_document(file_bytes, file.filename, session_id)
+
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result.get("error", "文档处理失败"))
+
+    return {
+        "filename": file.filename,
+        "chunk_count": result["chunk_count"],
+        "preview": result["preview"],
+        "file_type": result["file_type"],
+        "total_chars": result["total_chars"],
+        "session_id": session_id,
+        "status": "success",
+        "message": f"文档已处理，共{result['chunk_count']}个片段，分析时将自动参考此文档",
+    }
+
+
+@router.delete("/upload/session/{session_id}")
+def cleanup_session_route(session_id: str):
+    """清理用户session的临时文档"""
+    cleanup_session(session_id)
+    return {"status": "ok", "message": f"session {session_id[:8]} 已清理"}

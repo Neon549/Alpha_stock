@@ -207,45 +207,73 @@ def researcher_node(state: TradingState) -> dict:
     }
 
 
+def _calc_position_size(decision_text: str, confidence: str) -> str:
+    """仓位量化：根据决策和置信度给出具体百分比"""
+    if "强烈买入" in decision_text:
+        return {"高": "30%", "中": "20%", "低": "10%"}.get(confidence, "15%")
+    elif "买入" in decision_text:
+        return {"高": "20%", "中": "10%", "低": "5%"}.get(confidence, "10%")
+    return "0%"
+
+
+def _fix_position_consistency(text: str, confidence: str) -> str:
+    """后处理：修正仓位和决策一致性"""
+    import re
+    is_buy = any(x in text for x in ["强烈买入", "买入"])
+    is_watch = any(x in text for x in ["持有观望", "观望", "不买", "停止分析"])
+    if is_buy and not is_watch:
+        pos = _calc_position_size(text, confidence)
+        text = re.sub(r"建议仓位：.*", f"建议仓位：{pos}", text)
+    elif is_watch:
+        text = re.sub(r"建议仓位：.*", "建议仓位：0%", text)
+    return text
+
+
 def trader_node(state: TradingState) -> dict:
     """
     交易员节点：做出最终决策
+    仓位量化：根据置信度自动计算具体百分比，确保和决策一致
     """
     print(f"\n💼 [交易员] 综合所有信息，做出最终决策...")
 
     history = memory.get_history(state["stock_code"])
-
-    # 从技术面报告里提取当前价格上下文，给LLM计算价格用
     technical_context = (state.get("technical_report") or "")[:800]
+    risk_assessment = state.get("risk_assessment") or ""
+
+    # 从辩论结论提取置信度
+    confidence = "中"
+    if "置信度：高" in risk_assessment:
+        confidence = "高"
+    elif "置信度：低" in risk_assessment:
+        confidence = "低"
 
     prompt = f"""你是一位经验丰富的A股交易员，需要基于研究团队的分析做出最终交易决策。
 
-重要要求：
+【强制规则 - 违反即为错误输出】
 1. 只能依据已提供内容决策
-2. 若上游分析存在明显保守结论，应维持保守策略
-3. **所有价格参数必须给出具体数值或区间，禁止写"暂不设定"**
-4. 价格参数基于技术面报告中的当前价、支撑位、压力位推算
-5. 若真的数据严重不足，整体决策写"数据不足，停止分析"，此时价格字段才可写"/"
+2. 决策和建议仓位必须严格对应：
+   - 买入/强烈买入 → 建议仓位必须是具体百分比（如10%/20%/30%）
+   - 持有观望/不买 → 建议仓位必须是0%
+   - 严禁"持有观望"配"空仓等待"这种矛盾写法
+3. 所有价格必须是具体数字，严禁写"/"或"暂不设定"
+4. 数据不足时：决策写"数据不足，停止分析"，仓位写0%
 
-## 历史决策记录（避免重复犯错）
+## 历史决策记录
 {history}
 
-## 技术面数据（含当前价格，用于推算操作价位）
+## 技术面数据（含当前价格）
 {technical_context}
 
-## 研究员综合分析
-{state['bull_argument']}
-
-## 决策要求
-请给出明确的交易指令：
+## 研究员多空辩论结论
+{risk_assessment or state.get("bull_argument", "无")}
 
 ### 交易决策
-决策：[强烈买入 / 买入 / 持有观望 / 减仓 / 卖出 / 数据不足，停止分析]
-建议仓位：[买入时写建议仓位如"总仓20%"；减仓时写"建议减仓50%"；观望写"空仓等待"]
-操作价位：[买入时写建议介入价格区间；减仓/卖出时写建议减仓价格区间；观望时写等待介入的目标价]
-目标价：[买入/持有时写目标价；减仓后若反弹的观察价；观望时写预期买入后目标价]
-止损价：[所有方向都必须给出止损参考价，基于支撑位或跌幅比例推算]
-持有周期：[短线1-2周 / 中线1-3月，减仓时写建议完成减仓的时间周期]
+决策：[强烈买入 / 买入 / 持有观望 / 不买 / 数据不足，停止分析]
+建议仓位：[买入→20% 强烈买入→30% 观望/不买→0%]
+操作价位：[具体价格区间，如75.00-78.00元]
+目标价：[具体目标价，如95.00-100.00元]
+止损价：[具体止损价，如70.00元]
+持有周期：[短线1-2周 / 中线1-3月]
 
 ### 决策依据
 [3条核心理由]
@@ -255,19 +283,19 @@ def trader_node(state: TradingState) -> dict:
 """
 
     response = deep_llm.invoke([HumanMessage(content=prompt)])
-    decision = response.content
+    raw_decision = response.content
+    final_decision = _fix_position_consistency(raw_decision, confidence)
 
     memory.save_decision(
         stock_code=state["stock_code"],
-        decision=decision,
+        decision=final_decision,
         fundamental_summary=(state.get("fundamental_report") or "")[:300],
         technical_summary=(state.get("technical_report") or "")[:300],
         sentiment_summary=(state.get("sentiment_report") or "")[:300],
     )
 
     print("✅ 交易决策完成并已存入记忆")
-    return {"final_decision": decision}
-
+    return {"final_decision": final_decision}
 
 def backtest_node(state: TradingState) -> dict:
     """
@@ -468,7 +496,11 @@ backtest_graph = build_backtest_graph()
 trading_graph = build_trading_graph()
 
 
-def run_trading_analysis(stock_code: str) -> dict:
+def run_trading_analysis(stock_code: str, doc_context: str = "") -> dict:
+    """
+    完整分析入口
+    doc_context: 用户上传文档的相关内容，注入到分析上下文
+    """
     initial_state = {
         "stock_code": stock_code,
         "fundamental_report": None,
@@ -480,6 +512,8 @@ def run_trading_analysis(stock_code: str) -> dict:
         "final_decision": None,
         "risk_assessment": None,
         "messages": [],
+        # 用户上传的文档内容，供各Agent参考
+        "user_doc_context": doc_context if doc_context else "",
     }
     # Checkpoint thread_id：同一股票用同一ID，支持断点恢复
     config = {"configurable": {"thread_id": f"analysis_{stock_code}"}}
