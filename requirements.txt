@@ -22,3 +22,14 @@ chromadb
 tushare
 backtrader
 quantstats
+# ── 新增：Checkpoint持久化 ──
+langgraph-checkpoint-sqlite
+# ── 新增：多模态文档处理 ──
+PyMuPDF
+pdfplumber
+python-docx
+pytesseract
+# ── 新增：任务调度 ──
+schedule
+# ── 新增：中文分词（BM25混合检索）──
+jieba
