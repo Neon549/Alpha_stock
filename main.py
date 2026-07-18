@@ -1,11 +1,11 @@
 import os
+import sys
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import router
-import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
+
 app = FastAPI(
     title="AlphaStock · 智能投研助手",
     description="分析基本面、技术面、情绪面，结合Alpha因子回测，辅助A股交易决策",
@@ -20,117 +20,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(router, prefix="/api/v1")
+
+@app.get("/")
+def root():
+    return {"message": "AlphaStock · 智能投研助手", "docs": "/docs", "version": "2.0.0"}
 
 
-import os
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from api.routes import router
-import sys
-
-sys.stdout.reconfigure(encoding="utf-8")
-app = FastAPI(
-    title="AlphaStock · 智能投研助手",
-    description="分析基本面、技术面、情绪面，结合Alpha因子回测，辅助A股交易决策",
-    version="2.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.include_router(router, prefix="/api/v1")
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.on_event("startup")
 async def startup_event():
-    """
-    服务启动时后台启动新闻系统（不阻塞端口监听）：
-    1. 新闻库为空时批量初始化（18只股票 × 50条）
-    2. 每5分钟流式更新新增新闻
-    3. 每天凌晨2点清理30天前的旧新闻
-    """
+    """延迟加载路由 + 后台初始化新闻系统，避免阻塞端口绑定"""
     import threading
 
-    def _init_news():
+    def _heavy_init():
         try:
+            # 1. 延迟加载业务路由（包含langchain/langgraph等重依赖）
+            from api.routes import router
+
+            app.include_router(router, prefix="/api/v1")
+            print("[Startup] 业务路由加载完成 ✅")
+
+            # 2. 新闻系统
             from rag.news_indexer import start_news_system
 
-            start_news_system(
-                bulk_first=True,
-                stream_interval=5,
-                cleanup_hour=2,
-            )
+            start_news_system(bulk_first=True, stream_interval=5, cleanup_hour=2)
+            print("[Startup] 新闻系统启动完成 ✅")
         except Exception as e:
-            print(f"[Startup] 新闻系统启动失败（不影响主服务）: {e}")
+            print(f"[Startup] 后台初始化失败: {e}")
+            import traceback
 
-    threading.Thread(target=_init_news, daemon=True).start()
-    print("[Startup] FastAPI已就绪，新闻系统后台初始化中...")
+            traceback.print_exc()
 
-
-@app.get("/")
-def root():
-    return {"message": "AlphaStock · 智能投研助手", "docs": "/docs", "version": "1.0.0"}
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/news/stats")
-def news_stats():
-    """查看新闻库统计信息"""
-    try:
-        from rag.news_indexer import get_stats
-
-        return get_stats()
-    except Exception as e:
-        return {"error": str(e)}
+    threading.Thread(target=_heavy_init, daemon=True).start()
+    print("[Startup] FastAPI已就绪（端口已绑定），业务模块后台加载中...")
 
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=False,
-    )
-
-
-@app.get("/")
-def root():
-    return {"message": "AlphaStock · 智能投研助手", "docs": "/docs", "version": "1.0.0"}
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/news/stats")
-def news_stats():
-    """查看新闻库统计信息"""
-    try:
-        from rag.news_indexer import get_stats
-
-        return get_stats()
-    except Exception as e:
-        return {"error": str(e)}
-
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=False,
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
