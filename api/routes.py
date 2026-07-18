@@ -10,7 +10,12 @@ from pydantic import BaseModel
 from typing import Optional
 from graph.trading_graph import run_trading_analysis
 from memory.long_term import LongTermMemory
-from api.multimodal import analyze_image, process_document, retrieve_from_document, cleanup_session
+from api.multimodal import (
+    analyze_image,
+    process_document,
+    retrieve_from_document,
+    cleanup_session,
+)
 
 router = APIRouter()
 memory = LongTermMemory()
@@ -31,12 +36,12 @@ def _apply_model_config(model: str):
         llm_cfg.deep_llm = FallbackLLM(
             primary=_make_deepseek("deepseek-chat", temperature=0.1),
             backup=_qwen_backup,
-            name="DeepLLM[fast]"
+            name="DeepLLM[fast]",
         )
         llm_cfg.quick_llm = FallbackLLM(
             primary=_make_deepseek("deepseek-chat", temperature=0.1),
             backup=_qwen_backup,
-            name="QuickLLM[fast]"
+            name="QuickLLM[fast]",
         )
         print("[ModelConfig] 切换到 Fast 模式（DeepSeek-V3）")
 
@@ -45,12 +50,12 @@ def _apply_model_config(model: str):
         llm_cfg.deep_llm = FallbackLLM(
             primary=_make_deepseek("deepseek-reasoner", temperature=0.0),
             backup=_make_deepseek("deepseek-chat", temperature=0.0),
-            name="DeepLLM[strong]"
+            name="DeepLLM[strong]",
         )
         llm_cfg.quick_llm = FallbackLLM(
             primary=_make_deepseek("deepseek-reasoner", temperature=0.0),
             backup=_make_deepseek("deepseek-chat", temperature=0.0),
-            name="QuickLLM[strong]"
+            name="QuickLLM[strong]",
         )
         print("[ModelConfig] 切换到 Strong 模式（DeepSeek-R1, temp=0）")
 
@@ -59,12 +64,12 @@ def _apply_model_config(model: str):
         llm_cfg.deep_llm = FallbackLLM(
             primary=_make_deepseek("deepseek-reasoner", temperature=0.1),
             backup=_make_deepseek("deepseek-chat", temperature=0.1),
-            name="DeepLLM[smart]"
+            name="DeepLLM[smart]",
         )
         llm_cfg.quick_llm = FallbackLLM(
             primary=_make_deepseek("deepseek-chat", temperature=0.1),
             backup=_qwen_backup,
-            name="QuickLLM[smart]"
+            name="QuickLLM[smart]",
         )
         print("[ModelConfig] 切换到 Smart 模式（DeepSeek-R1）")
 
@@ -145,7 +150,9 @@ def analyze_stock(request: AnalyzeRequest):
         # 如果用户上传了文档，把文档内容注入到分析上下文
         doc_context = ""
         if request.session_id:
-            doc_context = retrieve_from_document(request.session_id, f"{stock_code} 财务 分析")
+            doc_context = retrieve_from_document(
+                request.session_id, f"{stock_code} 财务 分析"
+            )
             if doc_context:
                 print(f"[Analyze] 检索到用户上传文档内容：{len(doc_context)}字")
 
@@ -331,9 +338,9 @@ def scan_today_signals(request: ScanRequest):
 
 @router.post("/upload/image")
 async def upload_image(
-        file: UploadFile = File(...),
-        question: str = Form(default=""),
-        session_id: str = Form(default=""),
+    file: UploadFile = File(...),
+    question: str = Form(default=""),
+    session_id: str = Form(default=""),
 ):
     """
     上传图片并用多模态LLM分析
@@ -361,8 +368,8 @@ async def upload_image(
 
 @router.post("/upload/document")
 async def upload_document(
-        file: UploadFile = File(...),
-        session_id: str = Form(default="default_session"),
+    file: UploadFile = File(...),
+    session_id: str = Form(default="default_session"),
 ):
     """
     上传文档（PDF/Word/CSV/TXT）并存入临时向量库
@@ -382,7 +389,9 @@ async def upload_document(
     if len(file_bytes) > max_size:
         raise HTTPException(status_code=400, detail="文件大小不能超过20MB")
 
-    print(f"[Upload] 收到文档：{file.filename}，大小：{len(file_bytes)/1024:.1f}KB，session：{session_id[:8]}")
+    print(
+        f"[Upload] 收到文档：{file.filename}，大小：{len(file_bytes)/1024:.1f}KB，session：{session_id[:8]}"
+    )
 
     result = process_document(file_bytes, file.filename, session_id)
 
@@ -406,3 +415,134 @@ def cleanup_session_route(session_id: str):
     """清理用户session的临时文档"""
     cleanup_session(session_id)
     return {"status": "ok", "message": f"session {session_id[:8]} 已清理"}
+
+
+# ── Alpha 因子打分接口 ──────────────────────────────────────────────────
+
+
+class AlphaRequest(BaseModel):
+    stocks: Optional[list] = None  # [(code, name), ...] 不传则用动态股票池
+    min_score: float = 60
+    top_n: int = 20
+    sector: Optional[str] = None  # 指定板块筛选
+
+
+class SingleAlphaRequest(BaseModel):
+    stock_code: str
+    stock_name: str = ""
+
+
+@router.post("/alpha/score")
+def alpha_score(request: AlphaRequest):
+    """
+    Alpha因子批量打分
+    五因子：KDJ反转 + 成交量 + ROE + 市值 + 均线趋势
+    评级：≥75重点关注 / 60-74值得关注 / <60不推荐
+    """
+    try:
+        from backtest.alpha_factor import batch_score
+        from backtest.stock_universe import get_dynamic_universe, STOCK_UNIVERSE
+
+        # 确定股票池
+        if request.stocks:
+            stock_list = [(s[0], s[1]) for s in request.stocks]
+        elif request.sector and request.sector in STOCK_UNIVERSE:
+            stock_list = list(STOCK_UNIVERSE[request.sector].items())
+        else:
+            # 用动态股票池（缓存）
+            stock_list = get_dynamic_universe(max_stocks=200, use_cache=True)
+
+        print(f"[Alpha] 开始打分：{len(stock_list)} 只股票")
+
+        scores = batch_score(
+            stock_list=stock_list,
+            min_score=request.min_score,
+            top_n=request.top_n,
+        )
+
+        return {
+            "total_scored": len(stock_list),
+            "qualified": len(scores),
+            "min_score": request.min_score,
+            "results": [s.to_dict() for s in scores],
+            "status": "success",
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"打分失败：{str(e)}")
+
+
+@router.post("/alpha/single")
+def alpha_single(request: SingleAlphaRequest):
+    """
+    单只股票Alpha因子打分
+    """
+    try:
+        from backtest.alpha_factor import score_stock, format_score_report
+
+        score = score_stock(
+            request.stock_code, request.stock_name or request.stock_code
+        )
+
+        if score.error:
+            raise HTTPException(status_code=400, detail=f"打分失败：{score.error}")
+
+        return {
+            **score.to_dict(),
+            "report": format_score_report(score),
+            "status": "success",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"打分失败：{str(e)}")
+
+
+# ── 用户认证接口 ────────────────────────────────────────────────────────
+
+from api.auth import (
+    register as _register,
+    login as _login,
+    verify_token as _verify,
+    logout as _logout,
+)
+
+
+class AuthRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TokenRequest(BaseModel):
+    token: str
+
+
+@router.post("/auth/register")
+def auth_register(request: AuthRequest):
+    """用户注册"""
+    result = _register(request.username, request.password)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["message"])
+    return result
+
+
+@router.post("/auth/login")
+def auth_login(request: AuthRequest):
+    """用户登录"""
+    result = _login(request.username, request.password)
+    if not result["success"]:
+        raise HTTPException(status_code=401, detail=result["message"])
+    return result
+
+
+@router.post("/auth/verify")
+def auth_verify(request: TokenRequest):
+    """验证token"""
+    return _verify(request.token)
+
+
+@router.post("/auth/logout")
+def auth_logout(request: TokenRequest):
+    """登出"""
+    return _logout(request.token)
