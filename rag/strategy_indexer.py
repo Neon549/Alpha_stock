@@ -17,7 +17,62 @@ import time
 from datetime import datetime
 from chromadb.utils import embedding_functions
 import chromadb
-from rag.strategy_docs import STRATEGY_DOCUMENTS
+
+# 策略知识文档（内嵌，不依赖外部文件）
+STRATEGY_DOCUMENTS = [
+    {
+        "title": "KDJ指标原理与A股应用",
+        "content": """KDJ指标由K、D、J三条线组成，基于随机指标RSV计算。
+K线为RSV的3日移动平均，D线为K线的3日移动平均，J线=3K-2D。
+金叉信号：K线从下方上穿D线，且发生在超卖区域（KD<20）时信号更可靠。
+死叉信号：K线从上方下穿D线，且发生在超买区域（KD>80）时信号更可靠。
+A股特点：KDJ在强趋势行情中容易钝化，需结合趋势指标过滤。
+参数优化：震荡市建议缩短周期至5-7日，趋势市使用默认9日。
+AlphaStock策略：K<25且J<15为超卖信号，结合市值≥300亿和主题景气判断买入。""",
+    },
+    {
+        "title": "MACD指标与趋势确认",
+        "content": """MACD由DIF线、DEA线和MACD柱组成。
+DIF=12日EMA - 26日EMA，DEA=DIF的9日EMA，MACD柱=DIF-DEA。
+金叉买入：DIF上穿DEA且MACD柱由负转正，趋势确认信号。
+死叉卖出：DIF下穿DEA且MACD柱由正转负，趋势转弱信号。
+与KDJ配合：KDJ金叉提供入场时机，MACD确认趋势方向，双重过滤降低假信号。
+背离信号：价格创新高但MACD未创新高为顶背离，预示下跌风险。""",
+    },
+    {
+        "title": "RSI指标超买超卖策略",
+        "content": """RSI衡量价格上涨动能与下跌动能的比值，范围0-100。
+经典阈值：RSI>70为超买区，RSI<30为超卖区。
+A股调整：建议将阈值调整为RSI>75超买，RSI<25超卖。
+多周期共振：日线RSI与周线RSI同时超卖时，买入信号更可靠。
+统计有效性：单次回测交易次数需>30次才具备统计意义。""",
+    },
+    {
+        "title": "夏普比率与风险调整收益",
+        "content": """夏普比率=（策略年化收益-无风险利率）/ 收益标准差。
+A股无风险利率参考：一般取3%（十年期国债收益率）。
+评级标准：夏普>1.0为优秀，0.5-1.0为良好，0-0.5为一般，<0为不合格。
+最大回撤：从历史最高点到最低点的最大跌幅，衡量策略最坏情况。
+卡玛比率：年化收益/最大回撤，>1.0为优秀策略。""",
+    },
+    {
+        "title": "A股量化回测常见陷阱",
+        "content": """过拟合：在历史数据上反复优化参数导致策略对样本外数据失效。
+幸存者偏差：回测时使用当前股票池，忽略了已退市股票，导致收益虚高。
+未来函数：使用了当日收盘价计算信号却在当日买入，实盘无法复现。
+滑点忽略：未考虑买卖价差，实盘收益通常比回测低1-3%。
+参数敏感性：好的策略应在参数小幅变动时保持稳定。""",
+    },
+    {
+        "title": "主题景气周期股投资策略",
+        "content": """AlphaStock核心策略：主题/景气周期股 + 相对低位介入。
+选股条件：有明确的景气或主题驱动（造船/AI/半导体/军工/低空经济）。
+市值门槛：≥300亿，避免小盘股操控风险。
+KDJ低位：K<25且J<15，短期超卖有反弹动力。
+Alpha因子：KDJ反转+成交量放大+ROE质量+市值规模+均线趋势五因子打分。
+评级：≥75分重点关注，60-74分值得关注，<60分不推荐。""",
+    },
+]
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # ChromaDB 持久化路径
@@ -77,12 +132,14 @@ def _build_index(collection):
         chunks = splitter.split_text(full_text)
         for chunk in chunks:
             documents.append(chunk)
-            metadatas.append({
-                "title": doc["title"],
-                "source": "strategy_docs",
-                "type": "static",
-                "date": "static"
-            })
+            metadatas.append(
+                {
+                    "title": doc["title"],
+                    "source": "strategy_docs",
+                    "type": "static",
+                    "date": "static",
+                }
+            )
             ids.append(f"static_{idx}")
             idx += 1
 
@@ -102,6 +159,7 @@ def _build_index(collection):
     for stock_code, stock_name in target_stocks:
         try:
             from tools.akshare_tools import get_financial_indicator
+
             result = get_financial_indicator.invoke({"symbol": stock_code})
 
             if "[TOOL_ERROR]" not in result and result.strip():
@@ -109,13 +167,15 @@ def _build_index(collection):
                 chunks = splitter.split_text(doc_text)
                 for chunk in chunks:
                     documents.append(chunk)
-                    metadatas.append({
-                        "title": f"{stock_name}财务指标",
-                        "source": "akshare_financial",
-                        "type": "realtime",
-                        "stock_code": stock_code,
-                        "date": datetime.now().strftime("%Y-%m-%d")
-                    })
+                    metadatas.append(
+                        {
+                            "title": f"{stock_name}财务指标",
+                            "source": "akshare_financial",
+                            "type": "realtime",
+                            "stock_code": stock_code,
+                            "date": datetime.now().strftime("%Y-%m-%d"),
+                        }
+                    )
                     ids.append(f"financial_{stock_code}_{idx}")
                     idx += 1
                 real_count += 1
@@ -152,6 +212,7 @@ def update_realtime_data(stock_code: str):
 
     try:
         from tools.akshare_tools import get_stock_news
+
         news_result = get_stock_news.invoke({"symbol": stock_code})
 
         if "[TOOL_ERROR]" in news_result:
@@ -171,14 +232,16 @@ def update_realtime_data(stock_code: str):
         for i, chunk in enumerate(chunks):
             collection.add(
                 documents=[chunk],
-                metadatas=[{
-                    "title": f"{stock_code}最新新闻",
-                    "source": "akshare_news",
-                    "type": "realtime",
-                    "stock_code": stock_code,
-                    "date": today
-                }],
-                ids=[f"{doc_id}_{i}"]
+                metadatas=[
+                    {
+                        "title": f"{stock_code}最新新闻",
+                        "source": "akshare_news",
+                        "type": "realtime",
+                        "stock_code": stock_code,
+                        "date": today,
+                    }
+                ],
+                ids=[f"{doc_id}_{i}"],
             )
 
         print(f"[RAG] {stock_code} 新闻增量入库完成")
@@ -204,10 +267,7 @@ def retrieve_strategy_knowledge(query: str, k: int = 3) -> str:
             return ""
 
         output = []
-        for doc_text, meta in zip(
-            results["documents"][0],
-            results["metadatas"][0]
-        ):
+        for doc_text, meta in zip(results["documents"][0], results["metadatas"][0]):
             title = meta.get("title", "")
             source = meta.get("source", "")
             date = meta.get("date", "")
@@ -230,6 +290,7 @@ def retrieve_strategy_knowledge(query: str, k: int = 3) -> str:
 
 
 # ── 兼容旧接口 ────────────────────────────────────────────────────────
+
 
 def build_strategy_index():
     collection = _get_collection()
