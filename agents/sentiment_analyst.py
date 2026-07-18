@@ -5,17 +5,19 @@ from langchain_core.messages import HumanMessage
 from config.llm_config import quick_llm
 from tools.akshare_tools import get_stock_price
 from rag.retriever import retrieve_stock_news
+from agents.skill_loader import load_skill_with_ref
 
+# ========== 兜底 SYSTEM_PROMPT ==========
 SYSTEM_PROMPT = """你是一位专业的A股市场情绪分析师，专注于通过新闻资讯和市场数据判断市场情绪。
 
 你必须严格遵守以下规则：
 
 【硬性规则】
-1. 你只能基于下方“工具已返回结果”中的内容分析。
+1. 你只能基于下方"工具已返回结果"中的内容分析。
 2. 禁止补充、猜测、脑补任何未出现的数据。
 3. 禁止编造订单、政策利好、资金流、买单规模、机构持仓变化等未被工具直接返回的信息。
 4. 如果行情工具返回 [TOOL_ERROR]，必须停止分析。
-5. 新闻检索结果若为“未找到”或“暂无相关新闻”，不构成失败，只能视为“暂无可验证信息”。
+5. 新闻检索结果若为"未找到"或"暂无相关新闻"，不构成失败，只能视为"暂无可验证信息"。
 6. 你必须在最终输出第一行写：
    - [ANALYSIS_OK]
    或
@@ -33,18 +35,18 @@ SYSTEM_PROMPT = """你是一位专业的A股市场情绪分析师，专注于通
 数据可靠性：[高/中/低]
 
 ### 2. 新闻情绪
-[分别总结业绩、订单、政策三类检索结果；若没有相关新闻，明确写“暂无可验证信息”]
+[分别总结业绩、订单、政策三类检索结果；若没有相关新闻，明确写"暂无可验证信息"]
 
 ### 3. 市场热度
-[只基于行情工具结果分析；若无法验证则写“无法验证”]
+[只基于行情工具结果分析；若无法验证则写"无法验证"]
 
 ### 4. 情绪评分
 评分：[-2到+2]
 理由：[必须只基于工具返回内容]
 
 ### 5. 近期催化剂
-正面：[只写工具里明确出现的内容；否则写“暂无可验证信息”]
-负面：[只写工具里明确出现的内容；否则写“暂无可验证信息”]
+正面：[只写工具里明确出现的内容；否则写"暂无可验证信息"]
+负面：[只写工具里明确出现的内容；否则写"暂无可验证信息"]
 
 - 如果不能分析，严格输出：
 
@@ -81,31 +83,54 @@ def _post_check_sentiment_output(text: str, stock_code: str) -> str:
 
 
 def run_sentiment_analysis(stock_code: str) -> str:
+    # ✅ 从 SKILL.md 加载情绪面规范（找不到则用兜底）
+    system_prompt = load_skill_with_ref("stock_analysis", "sentiment_rules") or SYSTEM_PROMPT
+
     # 1) 程序化调用工具
-    news_perf = retrieve_stock_news.invoke({"stock_code": stock_code, "query": "业绩"})
-    news_order = retrieve_stock_news.invoke({"stock_code": stock_code, "query": "订单"})
-    news_policy = retrieve_stock_news.invoke(
-        {"stock_code": stock_code, "query": "政策"}
-    )
+    # 优先用akshare直接拉取实时新闻（更可靠）
+    # RAG检索作为补充（新闻库可能还没入库）
+    from tools.akshare_tools import get_stock_news as _get_news_direct
+
+    # 直接拉取实时新闻
+    raw_news = _get_news_direct.invoke({"symbol": stock_code})
+
+    if raw_news and "[TOOL_ERROR]" not in raw_news:
+        # 有实时新闻，按关键词分类
+        news_lines = [l.strip() for l in raw_news.strip().split("\n") if l.strip()]
+
+        perf_kw = ["业绩", "净利润", "营收", "盈利", "亏损", "财报", "季报", "年报"]
+        order_kw = ["订单", "合同", "中标", "签约", "招标", "供应"]
+        policy_kw = ["政策", "监管", "补贴", "支持", "规划", "国家", "部委", "批复"]
+
+        news_perf = "\n".join([l for l in news_lines if any(k in l for k in perf_kw)]) or "暂无业绩相关新闻"
+        news_order = "\n".join([l for l in news_lines if any(k in l for k in order_kw)]) or "暂无订单相关新闻"
+        news_policy = "\n".join([l for l in news_lines if any(k in l for k in policy_kw)]) or "暂无政策相关新闻"
+
+        # 如果分类后都是空的，把全部新闻放在业绩里
+        if all(x.startswith("暂无") for x in [news_perf, news_order, news_policy]):
+            news_perf = raw_news[:500]  # 取前500字
+            news_order = "暂无订单相关新闻"
+            news_policy = "暂无政策相关新闻"
+    else:
+        # akshare失败，退化到RAG检索
+        news_perf = retrieve_stock_news.invoke({"stock_code": stock_code, "query": "业绩"})
+        news_order = retrieve_stock_news.invoke({"stock_code": stock_code, "query": "订单"})
+        news_policy = retrieve_stock_news.invoke({"stock_code": stock_code, "query": "政策"})
+
+        if "[TOOL_ERROR]" in news_perf: news_perf = "暂无业绩相关新闻"
+        if "[TOOL_ERROR]" in news_order: news_order = "暂无订单相关新闻"
+        if "[TOOL_ERROR]" in news_policy: news_policy = "暂无政策相关新闻"
 
     price_result = get_stock_price.invoke({"symbol": stock_code})
     if "[TOOL_ERROR]" in price_result:
         price_result = get_stock_price.invoke({"symbol": stock_code})
 
-    # 2) 只有行情失败才中止；新闻全部失败时用占位文本继续
+    # 2) 只有行情失败才中止
     if "[TOOL_ERROR]" in price_result:
         return _abort("行情核验工具返回错误，无法完成市场热度分析。")
 
-    # 新闻工具失败时不中止，用占位文本替换
-    if "[TOOL_ERROR]" in news_perf:
-        news_perf = "暂无业绩相关新闻。"
-    if "[TOOL_ERROR]" in news_order:
-        news_order = "暂无订单相关新闻。"
-    if "[TOOL_ERROR]" in news_policy:
-        news_policy = "暂无政策相关新闻。"
-
     # 3) 工具成功后，让 LLM 只总结
-    prompt = f"""{SYSTEM_PROMPT}
+    prompt = f"""{system_prompt}
 
 以下是工具已返回结果，请严格基于这些内容输出最终报告：
 

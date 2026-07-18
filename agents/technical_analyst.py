@@ -152,7 +152,22 @@ def _post_check_technical_output(text: str, stock_code: str) -> str:
     return text
 
 
-def run_technical_analysis(stock_code: str) -> str:
+def run_technical_analysis(stock_code: str, check_eligibility: bool = True) -> str:
+    # ✅ 市值和策略条件检查（按需实时查，不做批量扫描）
+    if check_eligibility:
+        try:
+            from backtest.stock_universe import check_stock_eligibility
+            eligible, reason = check_stock_eligibility(stock_code, min_cap_billion=300)
+            if not eligible:
+                return (
+                    "[ANALYSIS_ABORT]\n"
+                    f"原因：{reason}\n"
+                    "结论：该股票不满足策略条件（市值<300亿或ST股），停止分析。"
+                )
+            print(f"[技术面] 市值校验通过：{reason}")
+        except Exception as e:
+            print(f"[技术面] 市值校验跳过：{e}")
+
     # ✅ 从 SKILL.md 加载技术面规范（找不到则用兜底 SYSTEM_PROMPT）
     system_prompt = load_skill_with_ref("stock_analysis", "technical_rules") or SYSTEM_PROMPT
 

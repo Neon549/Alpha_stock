@@ -1,55 +1,58 @@
 # agents/fundamental_analyst.py
 
 from langchain_core.messages import HumanMessage
-
 from config.llm_config import deep_llm
 from tools.akshare_tools import get_stock_price, get_financial_indicator
+from agents.skill_loader import load_skill_with_ref
 
 SYSTEM_PROMPT = """你是一位专业的A股基本面分析师，专注于通过财务数据评估股票的内在价值。
 
 你必须严格遵守以下规则：
 
 【硬性规则】
-1. 你只能基于下方“工具已返回结果”中的内容分析。
+1. 你只能基于下方"工具已返回结果"中的内容分析。
 2. 禁止补充、猜测、脑补任何未出现的数据。
-3. 禁止编造财务指标数据；股票名称若显示"名称未验证"，可用股票代码代替，不得因此中止分析。
-4. 若工具结果中存在 [TOOL_ERROR]，必须停止分析。
+3. 财务指标数据若标注"暂时无法获取"，说明接口暂时不可用，此时：
+   - 只基于行情数据（市值/价格/涨跌）做有限分析
+   - 在报告中明确标注"财务数据暂缺，以下为有限分析"
+   - 不得因财务数据缺失而ABORT（行情数据仍可做基础评估）
+4. 只有行情工具也返回 [TOOL_ERROR] 时，才能ABORT。
 5. 你必须在最终输出第一行写：
    - [ANALYSIS_OK]
    或
    - [ANALYSIS_ABORT]
 
 【输出要求】
-- 如果可以分析，严格输出：
+- 如果可以分析（哪怕只有行情数据），严格输出：
 
 [ANALYSIS_OK]
 ## 基本面分析报告
 
 ### 1. 股票信息核验
 股票代码：[代码]
-股票名称：[填写工具返回的名称；若为"名称未验证"则填写股票代码，继续完成分析]
+股票名称：[填写工具返回的名称；若为"名称未验证"则填写股票代码]
 数据可靠性：[高/中/低]
-核验结论：[简述]
+核验结论：[简述，若财务数据缺失需注明]
 
 ### 2. 估值分析
-[只分析工具返回的PE/PB/市值等]
+[基于已有数据分析；若PE/PB缺失，写"财务数据暂缺，无法评估估值"]
 
 ### 3. 盈利能力
-[只分析工具返回的ROE/营收增长率/毛利率等]
+[基于已有数据分析；若ROE缺失，写"财务数据暂缺，无法评估盈利能力"]
 
 ### 4. 财务健康
-[只分析工具返回的负债率/现金流相关信息；若缺失必须明确写“未提供”]
+[基于已有数据分析；若缺失写"未提供"]
 
 ### 5. 综合评级
-评级：[强烈买入/买入/中性/卖出/强烈卖出]
-理由：[基于已验证数据]
+评级：[强烈买入/买入/中性/卖出/强烈卖出/数据不足暂无法评级]
+理由：[基于已验证数据，数据不足时说明]
 风险提示：[主要风险]
 
-- 如果不能分析，严格输出：
+- 只有行情工具也失败时才输出：
 
 [ANALYSIS_ABORT]
 原因：[明确说明原因]
-结论：数据不足，无法分析。禁止基于假设给出评级或投资建议。
+结论：数据不足，无法分析。
 """
 
 
@@ -63,35 +66,31 @@ def _abort(reason: str) -> str:
 
 def _post_check_fundamental_output(text: str, stock_code: str) -> str:
     text = (text or "").strip()
-
     if not text:
         return _abort("基本面分析师未返回任何内容。")
-
     if text.startswith("[ANALYSIS_ABORT]"):
         return text
-
     if not text.startswith("[ANALYSIS_OK]"):
         return _abort("基本面分析结果未遵循规定格式，可信度不足。")
-
     return text
 
 
 def run_fundamental_analysis(stock_code: str) -> str:
-    # 1. 先程序化调用工具
+    system_prompt = load_skill_with_ref("stock_analysis", "fundamental_rules") or SYSTEM_PROMPT
+
+    # 1. 调用财务工具
     financial_result = get_financial_indicator.invoke({"symbol": stock_code})
     price_result = get_stock_price.invoke({"symbol": stock_code})
 
-    # 2. 工具失败则直接中止
+    # 2. 财务数据失败 → 降级处理，不ABORT
     if "[TOOL_ERROR]" in financial_result:
-        financial_result = (
-            "财务指标数据暂时无法获取，请基于技术面和情绪面数据综合判断。"
-        )
+        financial_result = "【财务数据暂时无法获取】接口暂时不可用，请基于行情数据做有限分析，并在报告中注明数据缺失。"
 
+    # 3. 行情数据失败 → 才ABORT（连基础数据都没有）
     if "[TOOL_ERROR]" in price_result:
-        return _abort("行情核验工具返回错误，无法完成股票信息交叉核验。")
+        return _abort("行情核验工具返回错误，连基础行情数据都无法获取，无法完成任何分析。")
 
-    # 3. 工具成功后，让 LLM 只负责总结，不再让它自己调工具
-    prompt = f"""{SYSTEM_PROMPT}
+    prompt = f"""{system_prompt}
 
 以下是工具已返回结果，请严格基于这些内容输出最终报告：
 
@@ -107,5 +106,4 @@ def run_fundamental_analysis(stock_code: str) -> str:
 
     response = deep_llm.invoke([HumanMessage(content=prompt)])
     final_text = response.content
-
     return _post_check_fundamental_output(final_text, stock_code)

@@ -11,6 +11,7 @@ import os
 import tushare as ts
 from dotenv import load_dotenv
 from pathlib import Path
+
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
 from tools.stock_name_dict import get_stock_name
 
@@ -68,9 +69,9 @@ def _validate_symbol(symbol: str) -> str | None:
 def _to_yf_symbol(symbol: str) -> str:
     return f"{symbol}.SS" if symbol.startswith("6") else f"{symbol}.SZ"
 
+
 def _normalize_symbol(symbol: str) -> str:
     return (symbol or "").strip()
-
 
 
 # 常用股票名称本地缓存，避免频繁调用Tushare stock_basic接口
@@ -182,6 +183,7 @@ def _get_hist_from_akshare(symbol: str, days: int) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
+
 def _safe_float(value):
     try:
         if pd.isna(value):
@@ -262,10 +264,14 @@ def get_stock_price(symbol: str) -> str:
         df = ticker.history(period="5d")
 
         if df.empty:
-            return _error("get_stock_price", symbol, "AKShare 与 yfinance 均未获取到行情数据")
+            return _error(
+                "get_stock_price", symbol, "AKShare 与 yfinance 均未获取到行情数据"
+            )
 
         if len(df) < 2:
-            return _error("get_stock_price", symbol, "可用交易日不足2天，无法计算涨跌幅")
+            return _error(
+                "get_stock_price", symbol, "可用交易日不足2天，无法计算涨跌幅"
+            )
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
@@ -310,89 +316,38 @@ def get_stock_price(symbol: str) -> str:
 
 @tool
 def get_financial_indicator(symbol: str) -> str:
-    """
-    获取A股股票核心财务指标。
-    优先使用 AKShare/行情工具里的中文股票名称；
-    财务字段仍主要来自 yfinance.info。
-    symbol: 股票代码，如 '002218'
-    """
+    """获取A股财务指标数据，包括PE、PB、ROE等。"""
     symbol = (symbol or "").strip()
-
     err = _validate_symbol(symbol)
     if err:
         return _error("get_financial_indicator", symbol, err)
 
     try:
-        # 1) 先尝试从 AKShare 直接获取中文股票名称
-        # 优先从Tushare获取中文股票名称，稳定不被403
-        ak_name = get_stock_name(symbol)
+        stock_name = get_stock_name(symbol)
 
-        # 2) 再从 yfinance 获取财务字段
-        yf_symbol = _to_yf_symbol(symbol)
-        ticker = yf.Ticker(yf_symbol)
+        # 用akshare获取财务摘要（同花顺接口）
+        df = ak.stock_financial_abstract_ths(symbol=symbol, indicator="按年度")
 
-        try:
-            info = ticker.info or {}
-        except Exception as e:
-            return _error(
-                "get_financial_indicator",
-                symbol,
-                f"财务信息拉取失败：{type(e).__name__}: {str(e)}"
-            )
+        if df is None or df.empty:
+            return _error("get_financial_indicator", symbol, "财务数据为空")
 
-        if not info:
-            return _error("get_financial_indicator", symbol, "财务信息为空")
-
-        # 3) 名称优先使用中文名，英文名仅作最后回退
-        stock_name = (
-            ak_name
-            or info.get("longName")
-            or info.get("shortName")
-            or "名称未验证"
-        )
-
-        current_price = info.get("currentPrice", "N/A")
-        trailing_pe = info.get("trailingPE", "N/A")
-        price_to_book = info.get("priceToBook", "N/A")
-        market_cap = info.get("marketCap", "N/A")
-        roe = info.get("returnOnEquity", "N/A")
-        revenue_growth = info.get("revenueGrowth", "N/A")
-        gross_margins = info.get("grossMargins", "N/A")
-        debt_to_equity = info.get("debtToEquity", "N/A")
-        industry = info.get("industry", "N/A")
-
-        core_values = [
-            current_price,
-            trailing_pe,
-            price_to_book,
-            market_cap,
-            roe,
-            revenue_growth,
-            gross_margins,
-            debt_to_equity,
-        ]
-        non_empty_count = sum(v not in [None, "N/A"] for v in core_values)
-
-        if non_empty_count == 0:
-            return _error("get_financial_indicator", symbol, "关键财务字段全部为空")
+        latest = df.iloc[0]
 
         body = (
             f"股票名称：{stock_name}\n"
-            f"最新价：{current_price}\n"
-            f"市盈率(PE)：{trailing_pe}\n"
-            f"市净率(PB)：{price_to_book}\n"
-            f"总市值：{market_cap}\n"
-            f"ROE：{roe}\n"
-            f"营收增长率：{revenue_growth}\n"
-            f"毛利率：{gross_margins}\n"
-            f"负债率：{debt_to_equity}\n"
-            f"行业：{industry}\n"
-            f"说明：股票名称优先采用 AKShare 中文简称；若部分字段为 N/A，表示数据源未提供，不得自行补全。"
+            f"报告期：{latest.get('报告期', 'N/A')}\n"
+            f"营业总收入：{latest.get('营业总收入', 'N/A')}\n"
+            f"净利润：{latest.get('净利润', 'N/A')}\n"
+            f"ROE：{latest.get('净资产收益率', 'N/A')}\n"
+            f"毛利率：{latest.get('销售毛利率', 'N/A')}\n"
+            f"数据来源：AKShare同花顺财务摘要"
         )
         return _ok("get_financial_indicator", symbol, body)
 
     except Exception as e:
-        return _error("get_financial_indicator", symbol, f"{type(e).__name__}: {str(e)}")
+        return _error(
+            "get_financial_indicator", symbol, f"{type(e).__name__}: {str(e)}"
+        )
 
 
 @tool
@@ -408,7 +363,9 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
         return _error("get_stock_history", symbol, err)
 
     if days <= 1 or days > 365:
-        return _error("get_stock_history", symbol, "days 参数不合理，应在 2 到 365 之间")
+        return _error(
+            "get_stock_history", symbol, "days 参数不合理，应在 2 到 365 之间"
+        )
 
     # ---------- 方案A：优先 AKShare ----------
     try:
@@ -418,7 +375,9 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
             required_cols = {"日期", "开盘", "收盘", "最高", "最低", "成交量"}
             if required_cols.issubset(set(df.columns)):
                 if df["收盘"].isna().all():
-                    return _error("get_stock_history", symbol, "AKShare 历史收盘价全部为空或NaN")
+                    return _error(
+                        "get_stock_history", symbol, "AKShare 历史收盘价全部为空或NaN"
+                    )
 
                 if "涨跌幅" not in df.columns:
                     df["涨跌幅"] = df["收盘"].pct_change(fill_method=None) * 100
@@ -427,8 +386,14 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
                 highest = _safe_float(df["最高"].max())
                 lowest = _safe_float(df["最低"].min())
 
-                if latest_close is not None and highest is not None and lowest is not None:
-                    df_view = df[["日期", "开盘", "收盘", "最高", "最低", "成交量", "涨跌幅"]].tail(10)
+                if (
+                    latest_close is not None
+                    and highest is not None
+                    and lowest is not None
+                ):
+                    df_view = df[
+                        ["日期", "开盘", "收盘", "最高", "最低", "成交量", "涨跌幅"]
+                    ].tail(10)
                     body = (
                         f"最近{len(df)}天K线数据\n"
                         f"期间最高价：{highest:.2f}\n"
@@ -447,7 +412,9 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
         df = _get_stock_history_cached(symbol, days, date_key)
 
         if df.empty:
-            return _error("get_stock_history", symbol, "AKShare 与 yfinance 均未获取到历史K线数据")
+            return _error(
+                "get_stock_history", symbol, "AKShare 与 yfinance 均未获取到历史K线数据"
+            )
 
         required_cols = {"日期", "开盘", "收盘", "最高", "最低", "成交量"}
         if not required_cols.issubset(set(df.columns)):
@@ -457,7 +424,9 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
             return _error("get_stock_history", symbol, "历史收盘价全部为空或NaN")
 
         if df[["开盘", "收盘", "最高", "最低"]].isna().any().any():
-            return _error("get_stock_history", symbol, "关键价格字段存在空值，无法生成技术摘要")
+            return _error(
+                "get_stock_history", symbol, "关键价格字段存在空值，无法生成技术摘要"
+            )
 
         df["涨跌幅"] = df["收盘"].pct_change(fill_method=None) * 100
 
@@ -466,7 +435,9 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
         lowest = _safe_float(df["最低"].min())
 
         if latest_close is None or highest is None or lowest is None:
-            return _error("get_stock_history", symbol, "关键价格字段存在空值，无法生成技术摘要")
+            return _error(
+                "get_stock_history", symbol, "关键价格字段存在空值，无法生成技术摘要"
+            )
 
         cols = ["日期", "开盘", "收盘", "最高", "最低", "成交量", "涨跌幅"]
         df_view = df[cols].tail(10)

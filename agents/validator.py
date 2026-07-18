@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-@author: yulin
-@created: 2026/5/31 21:50
-@updated: 2026/5/31 21:50
-@version: 1.0
-@description:
-"""
-
 # agents/validator.py
 # 验证Agent：检查各分析师结论是否一致，进行自我纠正
 
 from langchain_core.messages import HumanMessage
 from config.llm_config import quick_llm
+from agents.skill_loader import load_skill
 
+# ========== 兜底 VALIDATOR_PROMPT ==========
 VALIDATOR_PROMPT = """你是一个量化交易决策验证专家。
 
 你的任务是：
@@ -56,8 +50,10 @@ def run_validator(
     验证各Agent结论一致性，输出最终建议
     返回: {decision, confidence, reason, consistent}
     """
+    # ✅ 从 SKILL.md 加载验证规范（找不到则用兜底）
+    system_prompt = load_skill("stock_analysis") or VALIDATOR_PROMPT
 
-    prompt = f"""{VALIDATOR_PROMPT}
+    prompt = f"""{system_prompt}
 
 ## 股票代码
 {stock_code}
