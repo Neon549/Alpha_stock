@@ -21,7 +21,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-# ── 加载环境变量 ──────────────────────────────────────────────────────
+# ───加载环境变量─────────────────────────────────────────────────────
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path, override=True)
 
@@ -33,6 +33,7 @@ if not DEEPSEEK_API_KEY:
 
 
 # ── 模型工厂 ──────────────────────────────────────────────────────────
+
 
 def _make_deepseek(model: str, temperature: float = 0.1) -> ChatOpenAI:
     """创建 DeepSeek 模型实例"""
@@ -57,6 +58,7 @@ def _make_qwen(model: str, temperature: float = 0.1) -> ChatOpenAI:
 
 
 # ── 带自动降级的LLM包装 ───────────────────────────────────────────────
+
 
 class FallbackLLM:
     """
@@ -122,7 +124,7 @@ if DASHSCOPE_API_KEY:
 quick_llm = FallbackLLM(
     primary=_make_deepseek("deepseek-chat", temperature=0.1),
     backup=_qwen_backup,
-    name="QuickLLM"
+    name="QuickLLM",
 )
 
 # deep_llm：推理强，用于：
@@ -132,18 +134,18 @@ quick_llm = FallbackLLM(
 deep_llm = FallbackLLM(
     primary=_make_deepseek("deepseek-reasoner", temperature=0.1),
     backup=_make_deepseek("deepseek-chat", temperature=0.1),  # R1挂了降级V3
-    name="DeepLLM"
+    name="DeepLLM",
 )
 
 # ── 模型路由表（给Agent查询用）────────────────────────────────────────
 
 MODEL_ROUTING = {
-    "technical_analyst":    "TechLens本地模型（DeepSeek降级）",
-    "fundamental_analyst":  "deepseek-reasoner（推理强）",
-    "sentiment_analyst":    "deepseek-chat（快速便宜）",
-    "validator":            "deepseek-reasoner（综合裁判）",
+    "technical_analyst": "TechLens本地模型（DeepSeek降级）",
+    "fundamental_analyst": "deepseek-reasoner（推理强）",
+    "sentiment_analyst": "deepseek-chat（快速便宜）",
+    "validator": "deepseek-reasoner（综合裁判）",
     "backtest_interpreter": "deepseek-reasoner（策略解读）",
-    "trader":               "deepseek-chat（快速决策）",
+    "trader": "deepseek-chat（快速决策）",
 }
 
 
@@ -156,6 +158,7 @@ def print_model_routing():
 
 
 # ── TechLens 本地推理客户端 ───────────────────────────────────────────
+
 
 class TechLensClient:
     """
@@ -201,4 +204,6 @@ techlens_client = TechLensClient()
 print("✅ AlphaStock LLM配置加载完成")
 print(f"   主力：DeepSeek API {'✅' if DEEPSEEK_API_KEY else '❌'}")
 print(f"   备用：Qwen API {'✅' if DASHSCOPE_API_KEY else '❌（未配置，不影响运行）'}")
-print(f"   TechLens本地模型：{'✅ 在线' if techlens_client.is_available() else '⚠️ 离线（自动降级DeepSeek）'}")
+print(
+    f"   TechLens本地模型：{'✅ 在线' if techlens_client.is_available() else '⚠️ 离线（自动降级DeepSeek）'}"
+)

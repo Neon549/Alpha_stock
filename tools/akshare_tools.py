@@ -15,12 +15,14 @@ from pathlib import Path
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
 from tools.stock_name_dict import get_stock_name
 
-# def _get_ts_pro():
-#     token = os.getenv("TUSHARE_TOKEN", "")
-#     if not token:
-#         return None
-#     ts.set_token(token)
-#     return ts.pro_api()
+
+def _get_ts_pro():
+    token = os.getenv("TUSHARE_TOKEN", "")
+    if not token:
+        return None
+    ts.set_token(token)
+    return ts.pro_api()
+
 
 # ============================================================
 # 统一说明
@@ -77,62 +79,83 @@ def _normalize_symbol(symbol: str) -> str:
 # 常用股票名称本地缓存，避免频繁调用Tushare stock_basic接口
 _STOCK_NAME_CACHE: dict[str, str] = {}
 
-# @lru_cache(maxsize=256)
-# def _get_stock_name_from_tushare(symbol: str) -> str | None:
-#     """通过Tushare namechange接口获取股票中文名称，无频率限制"""
-#     try:
-#         import tushare as ts
-#         token = os.getenv("TUSHARE_TOKEN", "")
-#         if not token:
-#             return None
-#         ts.set_token(token)
-#         pro = ts.pro_api()
-#         ts_code = f"{symbol}.SH" if symbol.startswith("6") else f"{symbol}.SZ"
-#         df = pro.namechange(ts_code=ts_code, fields="ts_code,name")
-#         if df is not None and not df.empty:
-#             return str(df.iloc[0]["name"])
-#         return None
-#     except Exception as e:
-#         print(f"[TushareNameError] {symbol}: {e}")
-#         return None
+
+@lru_cache(maxsize=256)
+def _get_stock_name_from_tushare(symbol: str) -> str | None:
+    """通过Tushare namechange接口获取股票中文名称，无频率限制"""
+    try:
+        token = os.getenv("TUSHARE_TOKEN", "")
+        if not token:
+            return None
+        ts.set_token(token)
+        pro = ts.pro_api()
+        ts_code = f"{symbol}.SH" if symbol.startswith("6") else f"{symbol}.SZ"
+        df = pro.namechange(ts_code=ts_code, fields="ts_code,name")
+        if df is not None and not df.empty:
+            return str(df.iloc[0]["name"])
+        return None
+    except Exception as e:
+        print(f"[TushareNameError] {symbol}: {e}")
+        return None
 
 
-# def get_stock_name(symbol: str) -> str:
-#     """
-#     获取股票中文名称，优先本地缓存，其次Tushare。
-#     这是对外的统一入口，其他函数都调这个。
-#     """
-#     if symbol in _STOCK_NAME_CACHE:
-#         return _STOCK_NAME_CACHE[symbol]
-#     name = _get_stock_name_from_tushare(symbol)
-#     return name or "名称未验证"
+def _get_realtime_price_from_tushare(symbol: str) -> dict | None:
+    """
+    通过Tushare获取实时/最新行情，120积分可用
+    返回dict: {name, price, change_pct, volume}
+    """
+    try:
+        pro = _get_ts_pro()
+        if pro is None:
+            return None
+        ts_code = f"{symbol}.SH" if symbol.startswith("6") else f"{symbol}.SZ"
+        today = datetime.now().strftime("%Y%m%d")
+        df = pro.daily(ts_code=ts_code, start_date="20250101", end_date=today)
+        if df is None or df.empty:
+            return None
+        latest = df.iloc[0]  # 最新一行
+        name = _get_stock_name_from_tushare(symbol)
+        return {
+            "name": name or get_stock_name(symbol),
+            "price": float(latest["close"]),
+            "change_pct": float(latest["pct_chg"]),
+            "volume": float(latest["vol"]),
+            "market_cap": None,  # tushare daily不含市值，留None
+        }
+    except Exception:
+        return None
 
-# def _get_realtime_price_from_tushare(symbol: str) -> dict | None:
-#     """
-#     通过Tushare获取实时/最新行情，120积分可用
-#     返回dict: {name, price, change_pct, volume}
-#     """
-#     try:
-#         pro = _get_ts_pro()
-#         if pro is None:
-#             return None
-#         ts_code = f"{symbol}.SH" if symbol.startswith("6") else f"{symbol}.SZ"
-#         # 拉最近1天日线作为"最新行情"
-#         from datetime import datetime
-#         today = datetime.now().strftime("%Y%m%d")
-#         df = pro.daily(ts_code=ts_code, start_date="20250101", end_date=today)
-#         if df is None or df.empty:
-#             return None
-#         latest = df.iloc[0]  # 最新一行
-#         name = _get_stock_name_from_tushare(symbol)
-#         return {
-#             "name":       name or "名称未验证",
-#             "price":      float(latest["close"]),
-#             "change_pct": float(latest["pct_chg"]),
-#             "volume":     float(latest["vol"]),
-#         }
-#     except Exception:
-#         return None
+
+def _get_hist_from_tushare(symbol: str, days: int) -> pd.DataFrame:
+    """通过Tushare获取历史K线，返回统一列名DataFrame"""
+    try:
+        pro = _get_ts_pro()
+        if pro is None:
+            return pd.DataFrame()
+        ts_code = f"{symbol}.SH" if symbol.startswith("6") else f"{symbol}.SZ"
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=max(days * 2, 60))).strftime(
+            "%Y%m%d"
+        )
+        df = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.rename(
+            columns={
+                "trade_date": "日期",
+                "open": "开盘",
+                "close": "收盘",
+                "high": "最高",
+                "low": "最低",
+                "vol": "成交量",
+                "pct_chg": "涨跌幅",
+            }
+        )
+        df = df[["日期", "开盘", "收盘", "最高", "最低", "成交量", "涨跌幅"]].copy()
+        df = df.sort_values("日期").tail(days).reset_index(drop=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 def _get_hist_from_akshare(symbol: str, days: int) -> pd.DataFrame:
@@ -171,12 +194,10 @@ def _get_hist_from_akshare(symbol: str, days: int) -> pd.DataFrame:
         df = df[available].copy()
         df["日期"] = df["日期"].astype(str)
 
-        # 保证关键列是数值型
         for col in ["开盘", "收盘", "最高", "最低", "成交量"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # 只保留最近 days 条
         df = df.tail(days).reset_index(drop=True)
         return df
 
@@ -234,7 +255,7 @@ def _get_stock_history_cached(symbol: str, days: int, date_key: str) -> pd.DataF
 def get_stock_price(symbol: str) -> str:
     """
     获取A股股票最近行情数据。
-    优先 AKShare；失败再回退到 yfinance。
+    优先 Tushare；失败再回退到 yfinance。
     """
     symbol = _normalize_symbol(symbol)
 
@@ -242,20 +263,20 @@ def get_stock_price(symbol: str) -> str:
     if err:
         return _error("get_stock_price", symbol, err)
 
-    # # ---------- 方案A：优先 Tushare ----------
-    # try:
-    #     data = _get_realtime_price_from_tushare(symbol)
-    #     if data is not None:
-    #         body = (
-    #             f"股票名称：{data['name']}\n"
-    #             f"最新价：{data['price']:.2f}\n"
-    #             f"涨跌幅：{data['change_pct']:.2f}%\n"
-    #             f"成交量：{data['volume']}\n"
-    #             f"数据来源：Tushare日线行情\n"
-    #         )
-    #         return _ok("get_stock_price", symbol, body)
-    # except Exception:
-    #     pass
+    # ---------- 方案A：优先 Tushare ----------
+    try:
+        data = _get_realtime_price_from_tushare(symbol)
+        if data is not None:
+            body = (
+                f"股票名称：{data['name']}\n"
+                f"最新价：{data['price']:.2f}\n"
+                f"涨跌幅：{data['change_pct']:.2f}%\n"
+                f"成交量：{data['volume']}\n"
+                f"数据来源：Tushare日线行情\n"
+            )
+            return _ok("get_stock_price", symbol, body)
+    except Exception:
+        pass
 
     # ---------- 方案B：回退 yfinance ----------
     try:
@@ -265,7 +286,7 @@ def get_stock_price(symbol: str) -> str:
 
         if df.empty:
             return _error(
-                "get_stock_price", symbol, "AKShare 与 yfinance 均未获取到行情数据"
+                "get_stock_price", symbol, "Tushare 与 yfinance 均未获取到行情数据"
             )
 
         if len(df) < 2:
@@ -325,7 +346,6 @@ def get_financial_indicator(symbol: str) -> str:
     try:
         stock_name = get_stock_name(symbol)
 
-        # 用akshare获取财务摘要（同花顺接口）
         df = ak.stock_financial_abstract_ths(symbol=symbol, indicator="按年度")
 
         if df is None or df.empty:
@@ -354,7 +374,7 @@ def get_financial_indicator(symbol: str) -> str:
 def get_stock_history(symbol: str, days: int = 30) -> str:
     """
     获取A股股票最近N天历史K线数据。
-    优先 AKShare；失败再回退到 yfinance。
+    优先 Tushare；失败回退 AKShare；再失败回退 yfinance。
     """
     symbol = _normalize_symbol(symbol)
 
@@ -367,7 +387,30 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
             "get_stock_history", symbol, "days 参数不合理，应在 2 到 365 之间"
         )
 
-    # ---------- 方案A：优先 AKShare ----------
+    # ---------- 方案A：优先 Tushare ----------
+    try:
+        df = _get_hist_from_tushare(symbol, days)
+        if not df.empty:
+            latest_close = _safe_float(df["收盘"].iloc[-1])
+            highest = _safe_float(df["最高"].max())
+            lowest = _safe_float(df["最低"].min())
+            if latest_close and highest and lowest:
+                df_view = df[
+                    ["日期", "开盘", "收盘", "最高", "最低", "成交量", "涨跌幅"]
+                ].tail(10)
+                body = (
+                    f"最近{len(df)}天K线数据\n"
+                    f"期间最高价：{highest:.2f}\n"
+                    f"期间最低价：{lowest:.2f}\n"
+                    f"最新收盘价：{latest_close:.2f}\n"
+                    f"数据来源：Tushare日线行情\n\n"
+                    f"最近10日明细：\n{df_view.to_string(index=False)}"
+                )
+                return _ok("get_stock_history", symbol, body)
+    except Exception:
+        pass
+
+    # ---------- 方案B：回退 AKShare ----------
     try:
         df = _get_hist_from_akshare(symbol, days)
 
@@ -406,14 +449,16 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
     except Exception:
         pass
 
-    # ---------- 方案B：回退 yfinance ----------
+    # ---------- 方案C：回退 yfinance ----------
     try:
         date_key = datetime.now().strftime("%Y%m%d%H")
         df = _get_stock_history_cached(symbol, days, date_key)
 
         if df.empty:
             return _error(
-                "get_stock_history", symbol, "AKShare 与 yfinance 均未获取到历史K线数据"
+                "get_stock_history",
+                symbol,
+                "Tushare / AKShare / yfinance 均未获取到历史K线数据",
             )
 
         required_cols = {"日期", "开盘", "收盘", "最高", "最低", "成交量"}
@@ -422,11 +467,6 @@ def get_stock_history(symbol: str, days: int = 30) -> str:
 
         if df["收盘"].isna().all():
             return _error("get_stock_history", symbol, "历史收盘价全部为空或NaN")
-
-        if df[["开盘", "收盘", "最高", "最低"]].isna().any().any():
-            return _error(
-                "get_stock_history", symbol, "关键价格字段存在空值，无法生成技术摘要"
-            )
 
         df["涨跌幅"] = df["收盘"].pct_change(fill_method=None) * 100
 
