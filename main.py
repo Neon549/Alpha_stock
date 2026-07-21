@@ -3,6 +3,9 @@ import sys
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from db import init_db
+
+init_db()  # 建表，幂等，重复执行无害
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -43,6 +46,7 @@ async def startup_event():
 
             app.include_router(router, prefix="/api/v1")
             from api.auth_google import router as google_router
+
             app.include_router(google_router, prefix="/api/v1")
             print("[Startup] 业务路由加载完成 ✅")
 

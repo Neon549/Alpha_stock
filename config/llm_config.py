@@ -12,28 +12,95 @@ AlphaStock 多模型路由配置
   DEEPSEEK_API_KEY=your_deepseek_key
   DASHSCOPE_API_KEY=your_qwen_key
   TUSHARE_TOKEN=your_tushare_token
+  LANGFUSE_PUBLIC_KEY=your_langfuse_public_key
+  LANGFUSE_SECRET_KEY=your_langfuse_secret_key
+  LANGFUSE_HOST=http://localhost:3000
 """
 
 import os
 import time
+import uuid
 import requests as _requests
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-# ───加载环境变量─────────────────────────────────────────────────────
+# ── 加载环境变量 ─────────────────────────────────────────────────────
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path, override=True)
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_API_KEY  = os.getenv("DEEPSEEK_API_KEY")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 
 if not DEEPSEEK_API_KEY:
     raise ValueError("DEEPSEEK_API_KEY 未设置，请在 .env 文件中配置")
 
 
-# ── 模型工厂 ──────────────────────────────────────────────────────────
+# ── LangFuse 初始化 ───────────────────────────────────────────────────
 
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
+LANGFUSE_HOST       = os.getenv("LANGFUSE_HOST", "http://localhost:3000")
+
+_langfuse = None
+
+def _get_langfuse():
+    """懒加载 LangFuse 客户端，未配置时返回 None 不报错"""
+    global _langfuse
+    if _langfuse is not None:
+        return _langfuse
+    if not LANGFUSE_PUBLIC_KEY or not LANGFUSE_SECRET_KEY:
+        return None
+    try:
+        from langfuse import Langfuse
+        _langfuse = Langfuse(
+            public_key=LANGFUSE_PUBLIC_KEY,
+            secret_key=LANGFUSE_SECRET_KEY,
+            host=LANGFUSE_HOST,
+        )
+        print(f"✅ LangFuse 已连接：{LANGFUSE_HOST}")
+        return _langfuse
+    except Exception as e:
+        print(f"⚠️  LangFuse 初始化失败（不影响运行）: {e}")
+        return None
+
+
+def _trace(
+    name: str,
+    input_text: str,
+    output_text: str,
+    model: str,
+    latency_ms: float,
+    success: bool,
+    used_backup: bool = False,
+):
+    """上报一次 LLM 调用到 LangFuse"""
+    lf = _get_langfuse()
+    if lf is None:
+        return
+    try:
+        trace = lf.trace(
+            name=f"alphastock/{name}",
+            metadata={
+                "model":       model,
+                "success":     success,
+                "used_backup": used_backup,
+                "latency_ms":  round(latency_ms, 1),
+            },
+        )
+        trace.generation(
+            name=name,
+            model=model,
+            input=input_text[:2000],   # 防止太长
+            output=output_text[:2000],
+            metadata={"latency_ms": round(latency_ms, 1)},
+        )
+        lf.flush()
+    except Exception as e:
+        print(f"[LangFuse] 上报失败（不影响运行）: {e}")
+
+
+# ── 模型工厂 ──────────────────────────────────────────────────────────
 
 def _make_deepseek(model: str, temperature: float = 0.1) -> ChatOpenAI:
     """创建 DeepSeek 模型实例"""
@@ -57,13 +124,24 @@ def _make_qwen(model: str, temperature: float = 0.1) -> ChatOpenAI:
     )
 
 
-# ── 带自动降级的LLM包装 ───────────────────────────────────────────────
+# ── 带自动降级 + LangFuse 追踪的 LLM 包装 ────────────────────────────
+
+def _msg_to_str(messages) -> str:
+    """把 messages 转成可读字符串用于追踪"""
+    try:
+        if isinstance(messages, list):
+            return " | ".join(
+                getattr(m, "content", str(m))[:300] for m in messages
+            )
+        return str(messages)[:300]
+    except Exception:
+        return ""
 
 
 class FallbackLLM:
     """
-    带自动降级的LLM包装器
-    主力模型失败时自动切换备用模型
+    带自动降级 + LangFuse 追踪的 LLM 包装器
+    主力模型失败时自动切换备用模型，每次调用自动上报到 LangFuse
 
     用法和普通LLM完全一样：
       response = fallback_llm.invoke([HumanMessage(content="...")])
@@ -71,25 +149,80 @@ class FallbackLLM:
 
     def __init__(self, primary, backup=None, name: str = "LLM"):
         self.primary = primary
-        self.backup = backup
-        self.name = name
+        self.backup  = backup
+        self.name    = name
 
     def invoke(self, messages, **kwargs):
+        t0 = time.time()
+        used_backup = False
         try:
-            return self.primary.invoke(messages, **kwargs)
+            result = self.primary.invoke(messages, **kwargs)
+            latency = (time.time() - t0) * 1000
+            _trace(
+                name=self.name,
+                input_text=_msg_to_str(messages),
+                output_text=getattr(result, "content", str(result)),
+                model=getattr(self.primary, "model_name", self.name),
+                latency_ms=latency,
+                success=True,
+            )
+            return result
         except Exception as e:
             if self.backup:
                 print(f"[{self.name}] 主力模型失败，切换备用: {e}")
-                return self.backup.invoke(messages, **kwargs)
+                used_backup = True
+                result = self.backup.invoke(messages, **kwargs)
+                latency = (time.time() - t0) * 1000
+                _trace(
+                    name=self.name,
+                    input_text=_msg_to_str(messages),
+                    output_text=getattr(result, "content", str(result)),
+                    model=getattr(self.backup, "model_name", "backup"),
+                    latency_ms=latency,
+                    success=True,
+                    used_backup=True,
+                )
+                return result
+            latency = (time.time() - t0) * 1000
+            _trace(
+                name=self.name,
+                input_text=_msg_to_str(messages),
+                output_text=str(e),
+                model=getattr(self.primary, "model_name", self.name),
+                latency_ms=latency,
+                success=False,
+            )
             raise
 
     async def ainvoke(self, messages, **kwargs):
+        t0 = time.time()
         try:
-            return await self.primary.ainvoke(messages, **kwargs)
+            result = await self.primary.ainvoke(messages, **kwargs)
+            latency = (time.time() - t0) * 1000
+            _trace(
+                name=self.name,
+                input_text=_msg_to_str(messages),
+                output_text=getattr(result, "content", str(result)),
+                model=getattr(self.primary, "model_name", self.name),
+                latency_ms=latency,
+                success=True,
+            )
+            return result
         except Exception as e:
             if self.backup:
                 print(f"[{self.name}] 主力模型失败，切换备用: {e}")
-                return await self.backup.ainvoke(messages, **kwargs)
+                result = await self.backup.ainvoke(messages, **kwargs)
+                latency = (time.time() - t0) * 1000
+                _trace(
+                    name=self.name,
+                    input_text=_msg_to_str(messages),
+                    output_text=getattr(result, "content", str(result)),
+                    model=getattr(self.backup, "model_name", "backup"),
+                    latency_ms=latency,
+                    success=True,
+                    used_backup=True,
+                )
+                return result
             raise
 
     def stream(self, messages, **kwargs):
@@ -140,12 +273,12 @@ deep_llm = FallbackLLM(
 # ── 模型路由表（给Agent查询用）────────────────────────────────────────
 
 MODEL_ROUTING = {
-    "technical_analyst": "TechLens本地模型（DeepSeek降级）",
-    "fundamental_analyst": "deepseek-reasoner（推理强）",
-    "sentiment_analyst": "deepseek-chat（快速便宜）",
-    "validator": "deepseek-reasoner（综合裁判）",
+    "technical_analyst":    "TechLens本地模型（DeepSeek降级）",
+    "fundamental_analyst":  "deepseek-reasoner（推理强）",
+    "sentiment_analyst":    "deepseek-chat（快速便宜）",
+    "validator":            "deepseek-reasoner（综合裁判）",
     "backtest_interpreter": "deepseek-reasoner（策略解读）",
-    "trader": "deepseek-chat（快速决策）",
+    "trader":               "deepseek-chat（快速决策）",
 }
 
 
@@ -158,7 +291,6 @@ def print_model_routing():
 
 
 # ── TechLens 本地推理客户端 ───────────────────────────────────────────
-
 
 class TechLensClient:
     """
@@ -179,10 +311,10 @@ class TechLensClient:
         resp = _requests.post(
             f"{self.base_url}/analyze",
             json={
-                "stock_code": stock_code,
+                "stock_code":     stock_code,
                 "history_result": history_result,
-                "price_result": price_result,
-                "kdj_result": kdj_result,
+                "price_result":   price_result,
+                "kdj_result":     kdj_result,
             },
             timeout=60,
         )
@@ -204,6 +336,7 @@ techlens_client = TechLensClient()
 print("✅ AlphaStock LLM配置加载完成")
 print(f"   主力：DeepSeek API {'✅' if DEEPSEEK_API_KEY else '❌'}")
 print(f"   备用：Qwen API {'✅' if DASHSCOPE_API_KEY else '❌（未配置，不影响运行）'}")
+print(f"   LangFuse：{'✅ ' + LANGFUSE_HOST if LANGFUSE_PUBLIC_KEY else '⚠️  未配置（不影响运行）'}")
 print(
     f"   TechLens本地模型：{'✅ 在线' if techlens_client.is_available() else '⚠️ 离线（自动降级DeepSeek）'}"
 )

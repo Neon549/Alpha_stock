@@ -322,7 +322,9 @@ def scan_today_signals(request: ScanRequest):
     try:
         from graph.scan_graph import run_daily_scan
 
-        result = run_daily_scan(base_start=request.base_start, strategy=request.strategy)
+        result = run_daily_scan(
+            base_start=request.base_start, strategy=request.strategy
+        )
         recommendations = result.get("final_recommendations", [])
         return {
             "date": __import__("datetime").datetime.now().strftime("%Y-%m-%d"),
@@ -548,37 +550,37 @@ def auth_logout(request: TokenRequest):
     """登出"""
     return _logout(request.token)
 
-# ── 对话记录持久化 ────────────────────────────────────────────────────
-import json as _json
 
-def _get_conv_db():
-    import sqlite3
-    conn = sqlite3.connect('/home/ubuntu/Alpha_stock/conversations.db')
-    conn.execute('''CREATE TABLE IF NOT EXISTS conversations (
-        id TEXT PRIMARY KEY,
-        username TEXT,
-        title TEXT,
-        messages TEXT,
-        updated_at TEXT
-    )''')
-    conn.commit()
-    return conn
+# ── 对话记录持久化（PostgreSQL 版）──────────────────────────────────
+import json as _json
+from db import execute
+
 
 @router.get("/conversations/{username}")
 def get_conversations(username: str):
-    from urllib.parse import unquote
-    username = unquote(username)
     """获取用户的对话记录"""
-    conn = _get_conv_db()
-    rows = conn.execute(
-        "SELECT id, title, messages FROM conversations WHERE username=? ORDER BY updated_at DESC LIMIT 20",
-        (username,)
-    ).fetchall()
-    conn.close()
-    return {"conversations": [
-        {"id": r[0], "title": r[1], "messages": _json.loads(r[2])}
-        for r in rows
-    ]}
+    from urllib.parse import unquote
+
+    username = unquote(username)
+
+    rows = execute(
+        """
+        SELECT id, title, messages
+        FROM conversations_store
+        WHERE username = %s
+        ORDER BY updated_at DESC
+        LIMIT 20
+        """,
+        (username,),
+        fetch="all",
+    )
+    return {
+        "conversations": [
+            {"id": r[0], "title": r[1], "messages": _json.loads(r[2])}
+            for r in (rows or [])
+        ]
+    }
+
 
 class ConvSaveRequest(BaseModel):
     id: str
@@ -586,27 +588,37 @@ class ConvSaveRequest(BaseModel):
     title: str
     messages: list
 
+
 @router.post("/conversations/save")
 def save_conversation(request: ConvSaveRequest):
-    from urllib.parse import unquote
-    request.username = unquote(request.username)
     """保存对话记录"""
+    from urllib.parse import unquote
     import datetime
-    conn = _get_conv_db()
-    conn.execute('''INSERT OR REPLACE INTO conversations
-        (id, username, title, messages, updated_at) VALUES (?,?,?,?,?)''',
-        (request.id, request.username, request.title,
-         _json.dumps(request.messages, ensure_ascii=False),
-         datetime.datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
+
+    username = unquote(request.username)
+
+    execute(
+        """
+        INSERT INTO conversations_store (id, username, title, messages, updated_at)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET
+            title      = EXCLUDED.title,
+            messages   = EXCLUDED.messages,
+            updated_at = EXCLUDED.updated_at
+        """,
+        (
+            request.id,
+            username,
+            request.title,
+            _json.dumps(request.messages, ensure_ascii=False),
+            datetime.datetime.now().isoformat(),
+        ),
+    )
     return {"ok": True}
+
 
 @router.delete("/conversations/{conv_id}")
 def delete_conversation(conv_id: str):
     """删除对话记录"""
-    conn = _get_conv_db()
-    conn.execute("DELETE FROM conversations WHERE id=?", (conv_id,))
-    conn.commit()
-    conn.close()
+    execute("DELETE FROM conversations_store WHERE id = %s", (conv_id,))
     return {"ok": True}
