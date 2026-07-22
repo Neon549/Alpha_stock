@@ -1,0 +1,80 @@
+{
+  "summary": {
+    "vector_avg_recall": 0.668,
+    "hybrid_avg_recall": 0.604,
+    "improvement": -0.064,
+    "improvement_pct": -9.6
+  },
+  "details": [
+    {
+      "stock_code": "600519",
+      "question": "贵州茅台最近有什么提价或价格相关消息？",
+      "vector_recall": 0.875,
+      "hybrid_recall": 0.875,
+      "recall_delta": 0.0
+    },
+    {
+      "stock_code": "300750",
+      "question": "宁德时代近期有哪些新公司或业务扩展消息？",
+      "vector_recall": 1.0,
+      "hybrid_recall": 1.0,
+      "recall_delta": 0.0
+    },
+    {
+      "stock_code": "000858",
+      "question": "五粮液最近有什么业绩或分红消息？",
+      "vector_recall": 0.706,
+      "hybrid_recall": 0.647,
+      "recall_delta": -0.059
+    },
+    {
+      "stock_code": "600036",
+      "question": "招商银行近期有什么人事变动或资金流动消息？",
+      "vector_recall": 0.909,
+      "hybrid_recall": 0.545,
+      "recall_delta": -0.364
+    },
+    {
+      "stock_code": "002415",
+      "question": "海康威视近期有什么分红消息？",
+      "vector_recall": 1.0,
+      "hybrid_recall": 1.0,
+      "recall_delta": 0.0
+    },
+    {
+      "stock_code": "601138",
+      "question": "工业富联最近有哪些资金流动消息？",
+      "vector_recall": 0.357,
+      "hybrid_recall": 0.357,
+      "recall_delta": 0.0
+    },
+    {
+      "stock_code": "300124",
+      "question": "汇川技术近期有哪些新业务或合作消息？",
+      "vector_recall": 0.889,
+      "hybrid_recall": 0.556,
+      "recall_delta": -0.333
+    },
+    {
+      "stock_code": "600487",
+      "question": "亨通光电近期有什么重要动态？",
+      "vector_recall": 0.118,
+      "hybrid_recall": 0.176,
+      "recall_delta": 0.058
+    },
+    {
+      "stock_code": "002475",
+      "question": "立讯精密近期有什么回购或上市消息？",
+      "vector_recall": 0.706,
+      "hybrid_recall": 0.706,
+      "recall_delta": 0.0
+    },
+    {
+      "stock_code": "603501",
+      "question": "韦尔股份近期有什么资金或业务动态？",
+      "vector_recall": 0.118,
+      "hybrid_recall": 0.176,
+      "recall_delta": 0.058
+    }
+  ]
+}

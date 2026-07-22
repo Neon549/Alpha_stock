@@ -1,0 +1,14 @@
+{
+  "vector": {
+    "faithfulness": 0.8541666666666666,
+    "answer_relevancy": NaN,
+    "context_recall": 0.5666666666666667,
+    "context_precision": 0.5266666666379445
+  },
+  "hybrid": {
+    "faithfulness": 0.9523809523809523,
+    "answer_relevancy": NaN,
+    "context_recall": 0.5666666666666667,
+    "context_precision": 0.48666666664183333
+  }
+}

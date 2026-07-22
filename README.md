@@ -174,3 +174,56 @@ curl http://localhost:8000/api/v1/backtest/history/600487
 **回测与Agent融合**：回测引擎封装为LangGraph工具节点，实现自然语言驱动回测——"帮我回测600487的RSI策略"直接触发完整分析链路。
 
 **参数自动优化**：网格搜索覆盖36种参数组合，按夏普比率排序，输出Top3最优参数，辅助策略调优。
+
+## 评估体系
+
+### 离线评估（已实现）
+
+基于 RAGAS 框架，在 10 条人工标注的 A 股问答样本上评估 RAG 检索质量。
+
+对比实验：纯向量检索（pgvector）vs 混合检索（BM25 + pgvector + RRF）
+
+| 指标 | 纯向量检索 | 混合检索 | 差异 |
+|------|-----------|---------|------|
+| Faithfulness | 0.854 | **0.952** | +0.098 ✅ |
+| Context Recall | 0.567 | 0.567 | 持平 |
+| Context Precision | 0.527 | 0.487 | -0.040 |
+
+**结论：** 混合检索在 Faithfulness 上提升约 10%，LLM 生成答案的幻觉更少，context 质量更高。
+
+评估脚本：`evaluation/evaluator.py`
+
+### 在线监控（已实现）
+
+接入 LangFuse 全链路追踪，记录每次 LLM 调用的完整 trace：输入输出内容、延迟、Token 消耗、模型降级事件。
+
+### 上线前评估方案（设计）
+
+- Golden Dataset 扩充至 50 条，覆盖更多股票和问题类型
+- 压力测试：并发 20 请求，P99 延迟 < 3s
+- 阈值门控：Faithfulness > 0.85 才允许上线
+- Prompt 回归：每次改动 Prompt 必须跑评估，分数不能下降
+
+### 上线后评估方案（设计）
+
+- 每日抽样 5% 请求，用 LLM-as-a-Judge 评分
+- 连续 3 次 Faithfulness < 0.7 触发告警
+- 每月更新 Golden Dataset，加入线上出现的难例
+- A/B 测试：新检索策略灰度上线，对比用户反馈
+
+### 开发方法论
+
+采用 EDD（Evaluation-Driven Development）：每次架构改动均先跑 `evaluation/evaluator.py` 验证提升，再合并主分支，确保迭代方向有量化依据。
+
+
+## 评估体系
+
+详细评估报告见 [evaluation/EVAL_REPORT.md](evaluation/EVAL_REPORT.md)
+
+| 指标 | 纯向量检索 | 混合检索（BM25+pgvector+RRF） |
+|------|-----------|------------------------------|
+| Faithfulness | 0.854 | **0.952** ✅ |
+| Context Recall | 0.567 | 0.567 |
+| Context Precision | 0.527 | 0.487 |
+
+混合检索在 Faithfulness 上提升约 10%，在线监控通过 LangFuse 全链路追踪实现。

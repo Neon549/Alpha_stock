@@ -15,3 +15,7 @@ venv/
 checkpoints.db-shm
 checkpoints.db-wal
 requirements_full.txt
+backtest/fundamental_cache/
+cache/
+reports/
+backtest/data_cache/
